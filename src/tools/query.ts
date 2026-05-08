@@ -28,9 +28,9 @@ export function registerQueryTools(server: McpServer) {
       },
     },
     async ({ query }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
-        const result = (await qboQuery(auth, query)) as any;
+        const result = (await qboQuery(query)) as any;
         return result.QueryResponse ?? result;
       });
     },

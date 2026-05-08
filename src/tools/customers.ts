@@ -22,14 +22,14 @@ export function registerCustomerTools(server: McpServer) {
       },
     },
     async ({ name_contains, active_only, max_results }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
         const where: string[] = [];
         if (active_only) where.push("Active = true");
         if (name_contains) where.push(`DisplayName LIKE '%${sqlEscape(name_contains)}%'`);
         const whereClause = where.length ? ` WHERE ${where.join(" AND ")}` : "";
         const q = `SELECT * FROM Customer${whereClause} MAXRESULTS ${max_results}`;
-        const result = (await qboQuery(auth, q)) as any;
+        const result = (await qboQuery(q)) as any;
         return result.QueryResponse ?? result;
       });
     },
@@ -44,9 +44,9 @@ export function registerCustomerTools(server: McpServer) {
       },
     },
     async ({ customer_id }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
-        const result = (await qboGet(auth, `/customer/${encodeURIComponent(customer_id)}`)) as any;
+        const result = (await qboGet(`/customer/${encodeURIComponent(customer_id)}`)) as any;
         return result.Customer ?? result;
       });
     },

@@ -14,13 +14,17 @@ export function registerMetaTools(server: McpServer) {
     async (_args, extra) => {
       const auth = await getAuthFromExtra(extra);
       try {
-        const info = (await qboGet(auth, "/companyinfo/1")) as any;
+        const info = (await qboGet("/companyinfo/1")) as any;
         const c = info?.CompanyInfo ?? {};
         return jsonContent({
           userId: auth.user.id,
           label: auth.user.label,
+          authMethod: auth.kind,
           environment: config.intuit.environment,
           connected: true,
+          // Reminder: company info comes from the *shared* admin connection,
+          // not from this user's own Intuit grant. The admin (whoever ran
+          // /connect/quickbooks) is whose tokens are talking to QBO.
           company: {
             name: c.CompanyName,
             legalName: c.LegalName,
@@ -35,8 +39,11 @@ export function registerMetaTools(server: McpServer) {
           return jsonContent({
             userId: auth.user.id,
             label: auth.user.label,
+            authMethod: auth.kind,
             connected: false,
-            hint: `Visit ${config.publicBaseUrl}/connect/quickbooks to link a QuickBooks company.`,
+            hint:
+              "No QuickBooks admin connection has been bootstrapped yet. " +
+              `Whoever has the admin token should visit ${config.publicBaseUrl}/connect/quickbooks.`,
           });
         }
         throw e;

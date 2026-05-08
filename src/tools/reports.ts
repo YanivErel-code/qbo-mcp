@@ -22,12 +22,12 @@ export function registerReportTools(server: McpServer) {
       },
     },
     async ({ start_date, end_date, summarize_by, accounting_method }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
         const q: Record<string, string> = { start_date, end_date };
         if (summarize_by) q.summarize_column_by = summarize_by;
         if (accounting_method) q.accounting_method = accounting_method;
-        return qboGet(auth, "/reports/ProfitAndLoss", q);
+        return qboGet("/reports/ProfitAndLoss", q);
       });
     },
   );
@@ -45,11 +45,11 @@ export function registerReportTools(server: McpServer) {
       },
     },
     async ({ as_of, accounting_method }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
         const q: Record<string, string> = { end_date: as_of };
         if (accounting_method) q.accounting_method = accounting_method;
-        return qboGet(auth, "/reports/BalanceSheet", q);
+        return qboGet("/reports/BalanceSheet", q);
       });
     },
   );

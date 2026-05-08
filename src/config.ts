@@ -9,6 +9,17 @@ const schema = z.object({
   DATABASE_PATH: z.string().default("./data/qbo-mcp.sqlite"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().default("0.0.0.0"),
+
+  // Shared secret coworkers paste at /team-signup to mint themselves a Bearer.
+  // Distribute via Slack/1P; rotate by changing env + restarting. If empty,
+  // self-signup is disabled.
+  TEAM_SIGNUP_TOKEN: z.string().optional(),
+
+  // Shared secret guarding /connect/quickbooks (the admin-only Intuit OAuth
+  // bootstrap). If empty, anyone who can reach the server can run this flow,
+  // which means anyone could become the QBO admin (then everyone else's
+  // tokens at Intuit get revoked). Strongly recommend setting this.
+  ADMIN_BOOTSTRAP_TOKEN: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -37,4 +48,6 @@ export const config = {
     env.INTUIT_ENVIRONMENT === "production"
       ? "https://quickbooks.api.intuit.com"
       : "https://sandbox-quickbooks.api.intuit.com",
+  teamSignupToken: env.TEAM_SIGNUP_TOKEN ?? null,
+  adminBootstrapToken: env.ADMIN_BOOTSTRAP_TOKEN ?? null,
 };

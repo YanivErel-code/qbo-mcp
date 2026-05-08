@@ -1,11 +1,23 @@
 import { config } from "./config.js";
 import { db } from "./db.js";
-import { type AuthedUser } from "./auth.js";
-import { decryptToken, encryptToken, isEncrypted } from "./crypto.js";
+import { decryptToken, encryptToken, deriveServerSideUserKey } from "./crypto.js";
+import { jwtSecret } from "./oauth/secret.js";
 import { refreshTokens, type IntuitTokens } from "./intuit.js";
 
+// ---- Shared-admin model ----
+//
+// Multi-user note: as of the shared-admin refactor, the qbo_connections
+// table holds at most one row per realm — the *admin* connection. Every
+// MCP user (regardless of how they authenticated) shares this single
+// upstream Intuit refresh token. Per-user audit lives on the inbound
+// MCP side (the user_id in the Bearer); per-user audit is NOT preserved
+// at Intuit's side.
+//
+// The encryption key is derived purely server-side from `jwtSecret +
+// "realm:<realm_id>"` because the shared connection isn't tied to any
+// one user's plaintext Bearer.
+
 type ConnectionRow = {
-  user_id: number;
   realm_id: string;
   access_token: string;
   refresh_token: string;
@@ -15,9 +27,24 @@ type ConnectionRow = {
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
+// We piggyback on `deriveServerSideUserKey` by passing user_id 0 (a
+// reserved sentinel — no real user has id 0, since AUTOINCREMENT starts
+// at 1). This keeps the crypto module unchanged. The realm_id participates
+// via the salt's "user:0" form being the same across realms — fine here
+// because we have one Ditto realm, but if multi-realm support is added
+// later, swap to a realm-aware HKDF info string.
+const SHARED_ENCRYPTION_USER_SLOT = 0;
+
+function sharedEncryptionKey(): Buffer {
+  return deriveServerSideUserKey(jwtSecret, SHARED_ENCRYPTION_USER_SLOT);
+}
+
 export class QboNotConnectedError extends Error {
   constructor() {
-    super("This user has not connected a QuickBooks company yet");
+    super(
+      "No QuickBooks admin connection has been established yet. " +
+        "An admin must run /connect/quickbooks to bootstrap.",
+    );
     this.name = "QboNotConnectedError";
   }
 }
@@ -33,43 +60,31 @@ export class QboApiError extends Error {
   }
 }
 
-function loadConnection(userId: number): ConnectionRow | null {
+function loadSharedConnection(): ConnectionRow | null {
   const row = db
     .prepare(
-      `SELECT user_id, realm_id, access_token, refresh_token,
+      `SELECT realm_id, access_token, refresh_token,
               access_expires_at, refresh_expires_at
-         FROM qbo_connections WHERE user_id = ? LIMIT 1`,
+         FROM qbo_connections LIMIT 1`,
     )
-    .get(userId) as ConnectionRow | undefined;
+    .get() as ConnectionRow | undefined;
   return row ?? null;
 }
 
-/**
- * Persist tokens encrypted-at-rest with a key derived from the user's API key.
- * The server holds only `sha256(api_key)`, not the plaintext, so without the
- * user's bearer presented on a request the on-disk tokens cannot be decrypted.
- */
-export function saveConnection(
-  userId: number,
-  realmId: string,
-  tokens: IntuitTokens,
-  encryptionKey: Buffer,
-): void {
-  const encAccess = encryptToken(tokens.accessToken, encryptionKey);
-  const encRefresh = encryptToken(tokens.refreshToken, encryptionKey);
+export function saveSharedConnection(realmId: string, tokens: IntuitTokens): void {
+  const key = sharedEncryptionKey();
+  const encAccess = encryptToken(tokens.accessToken, key);
+  const encRefresh = encryptToken(tokens.refreshToken, key);
+  // Wipe any prior rows — we only ever hold one shared connection.
+  db.prepare("DELETE FROM qbo_connections").run();
+  // user_id = 0 is the sentinel for "shared admin slot" (no real user owns it).
   db.prepare(
     `INSERT INTO qbo_connections
        (user_id, realm_id, access_token, refresh_token,
         access_expires_at, refresh_expires_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(user_id, realm_id) DO UPDATE SET
-       access_token = excluded.access_token,
-       refresh_token = excluded.refresh_token,
-       access_expires_at = excluded.access_expires_at,
-       refresh_expires_at = excluded.refresh_expires_at,
-       updated_at = excluded.updated_at`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    userId,
+    SHARED_ENCRYPTION_USER_SLOT,
     realmId,
     encAccess,
     encRefresh,
@@ -79,44 +94,20 @@ export function saveConnection(
   );
 }
 
-function deleteConnection(userId: number, realmId: string): void {
-  db.prepare(
-    "DELETE FROM qbo_connections WHERE user_id = ? AND realm_id = ?",
-  ).run(userId, realmId);
+function deleteSharedConnection(): void {
+  db.prepare("DELETE FROM qbo_connections").run();
 }
 
-async function ensureFreshAccessToken(
-  conn: ConnectionRow,
-  encryptionKey: Buffer,
-): Promise<string> {
-  // Decrypt or pass through legacy plaintext.
+async function ensureFreshAccessToken(conn: ConnectionRow): Promise<string> {
+  const key = sharedEncryptionKey();
   let accessToken: string;
   let refreshToken: string;
   try {
-    accessToken = decryptToken(conn.access_token, encryptionKey);
-    refreshToken = decryptToken(conn.refresh_token, encryptionKey);
+    accessToken = decryptToken(conn.access_token, key);
+    refreshToken = decryptToken(conn.refresh_token, key);
   } catch {
-    // Auth-tag mismatch: corrupt data or wrong key. Force re-link.
-    deleteConnection(conn.user_id, conn.realm_id);
+    deleteSharedConnection();
     throw new QboNotConnectedError();
-  }
-
-  // Lazy migration: any pre-encryption row gets re-saved encrypted on first
-  // touch after the upgrade. No explicit migration step needed.
-  const wasLegacy =
-    !isEncrypted(conn.access_token) || !isEncrypted(conn.refresh_token);
-  if (wasLegacy) {
-    saveConnection(
-      conn.user_id,
-      conn.realm_id,
-      {
-        accessToken,
-        refreshToken,
-        accessExpiresAt: conn.access_expires_at,
-        refreshExpiresAt: conn.refresh_expires_at,
-      },
-      encryptionKey,
-    );
   }
 
   if (conn.access_expires_at - Date.now() > REFRESH_BUFFER_MS) {
@@ -125,24 +116,21 @@ async function ensureFreshAccessToken(
 
   try {
     const newTokens = await refreshTokens(refreshToken);
-    saveConnection(conn.user_id, conn.realm_id, newTokens, encryptionKey);
+    saveSharedConnection(conn.realm_id, newTokens);
     return newTokens.accessToken;
   } catch {
-    // Refresh failed — Intuit refresh tokens expire after 100 days of inactivity,
-    // or if the user revoked access. Drop the stale row and force a reconnect.
-    deleteConnection(conn.user_id, conn.realm_id);
+    deleteSharedConnection();
     throw new QboNotConnectedError();
   }
 }
 
 async function request(
-  auth: AuthedUser,
   path: string,
   query?: Record<string, string>,
 ): Promise<unknown> {
-  const conn = loadConnection(auth.user.id);
+  const conn = loadSharedConnection();
   if (!conn) throw new QboNotConnectedError();
-  const accessToken = await ensureFreshAccessToken(conn, auth.encryptionKey);
+  const accessToken = await ensureFreshAccessToken(conn);
 
   const url = new URL(`${config.qboApiBase}/v3/company/${conn.realm_id}${path}`);
   url.searchParams.set("minorversion", "75");
@@ -167,14 +155,19 @@ async function request(
   return res.json();
 }
 
-export async function qboGet(
-  auth: AuthedUser,
-  path: string,
-  query?: Record<string, string>,
-): Promise<any> {
-  return request(auth, path, query);
+export async function qboGet(path: string, query?: Record<string, string>): Promise<any> {
+  return request(path, query);
 }
 
-export async function qboQuery(auth: AuthedUser, query: string): Promise<any> {
-  return request(auth, "/query", { query });
+export async function qboQuery(query: string): Promise<any> {
+  return request("/query", { query });
+}
+
+/** Inspector for /whoami and admin tooling. Does NOT decrypt tokens. */
+export function getSharedRealmInfo(): { realmId: string; updatedAt: number } | null {
+  const row = db
+    .prepare("SELECT realm_id, updated_at FROM qbo_connections LIMIT 1")
+    .get() as { realm_id: string; updated_at: number } | undefined;
+  if (!row) return null;
+  return { realmId: row.realm_id, updatedAt: row.updated_at };
 }

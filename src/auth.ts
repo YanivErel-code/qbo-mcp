@@ -1,7 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.js";
-import { deriveEncryptionKey, deriveServerSideUserKey } from "./crypto.js";
-import { jwtSecret } from "./oauth/secret.js";
 import { verifyAccessToken } from "./oauth/jwt.js";
 
 const API_KEY_PREFIX = "qbo_";
@@ -13,7 +11,6 @@ export type User = {
 
 export type AuthedUser = {
   user: User;
-  encryptionKey: Buffer;
   /** "static" = qbo_… Bearer; "oauth" = JWT issued via /oauth/token. */
   kind: "static" | "oauth";
 };
@@ -68,26 +65,14 @@ export async function authenticate(
     try {
       const verified = await verifyAccessToken(presented);
       const user = findUserById(verified.userId);
-      if (user) {
-        return {
-          user,
-          encryptionKey: deriveServerSideUserKey(jwtSecret, user.id),
-          kind: "oauth",
-        };
-      }
+      if (user) return { user, kind: "oauth" };
     } catch {
       // not a valid JWT — fall through to static key
     }
   }
 
   const user = findUserByApiKey(presented);
-  if (user) {
-    return {
-      user,
-      encryptionKey: deriveEncryptionKey(presented),
-      kind: "static",
-    };
-  }
+  if (user) return { user, kind: "static" };
   return null;
 }
 

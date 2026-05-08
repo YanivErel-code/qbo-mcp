@@ -1,12 +1,8 @@
 import { type Request, type Response, Router } from "express";
 import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
-import { buildAuthUrl, exchangeCode } from "../intuit.js";
 import { createUser, generateApiKey } from "../auth.js";
-import { deriveServerSideUserKey } from "../crypto.js";
-import { saveConnection } from "../qbo.js";
 import { signAccessToken } from "./jwt.js";
-import { jwtSecret } from "./secret.js";
 import {
   cleanupPending,
   clientSecretMatches,
@@ -117,10 +113,13 @@ oauthRouter.post("/oauth/register", (req: Request, res: Response) => {
 
 // ---- /oauth/authorize ----
 //
-// MCP client (e.g. claude.ai) hits this to start the auth code flow.
-// We park the request in oauth_pending and bounce the user to Intuit;
-// when Intuit returns to /connect/callback we look the state back up
-// and complete the flow.
+// MCP client (e.g. claude.ai) hits this to start the auth code flow. We
+// DON'T forward to Intuit here — Intuit only allows one admin per app
+// per realm, and a coworker authorizing would kick the existing admin out.
+// Instead, we park the request and show our own consent page that asks
+// for the shared TEAM_SIGNUP_TOKEN (distributed by the admin out-of-band).
+// Once the user pastes a valid token, we issue an auth code and redirect
+// back to the MCP client.
 
 oauthRouter.get("/oauth/authorize", (req: Request, res: Response) => {
   const q = req.query as Record<string, string | undefined>;
@@ -173,10 +172,53 @@ oauthRouter.get("/oauth/authorize", (req: Request, res: Response) => {
     PENDING_TTL_MS,
   );
 
-  // Send the user to Intuit. The state we pass is our internal one;
-  // the Intuit-callback dispatcher in server.ts looks for it in
-  // oauth_pending before falling back to legacy linking_sessions.
-  res.redirect(buildAuthUrl(internalState));
+  // Render the team-token consent page. Form posts back to /oauth/consent
+  // with the internalState carried in a hidden field.
+  res.type("html").send(consentPageHtml(internalState, client.client_name ?? "this app"));
+});
+
+// Form target for the consent page. Validates the team token and either
+// issues an auth code (redirect back to client) or shows an error.
+oauthRouter.post("/oauth/consent", (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, string>;
+  const { state, team_token } = body;
+  if (!state || !team_token) {
+    res.status(400).type("html").send(errorHtml("invalid_request", "Missing state or team_token."));
+    return;
+  }
+  if (!config.teamSignupToken || team_token !== config.teamSignupToken) {
+    res.status(403).type("html").send(errorHtml("forbidden", "Invalid team token. Ask the admin for the current value."));
+    return;
+  }
+  const pending = consumePending(state);
+  if (!pending) {
+    res.status(400).type("html").send(errorHtml("invalid_request", "State expired or already consumed."));
+    return;
+  }
+
+  // Issue a new MCP user + auth code. The user_id will end up bound to
+  // the JWT we eventually issue. They can call any tool — every call
+  // uses the *shared* admin QBO connection underneath.
+  const { hash } = generateApiKey();
+  const user = createUser(hash, "oauth-issued");
+  const code = newRandomToken("ac_", 24);
+  saveAuthCode(
+    {
+      code,
+      client_id: pending.client_id,
+      user_id: user.id,
+      redirect_uri: pending.redirect_uri,
+      scope: pending.scope,
+      code_challenge: pending.code_challenge,
+      code_challenge_method: pending.code_challenge_method,
+    },
+    CODE_TTL_MS,
+  );
+
+  const url = new URL(pending.redirect_uri);
+  url.searchParams.set("code", code);
+  if (pending.client_state) url.searchParams.set("state", pending.client_state);
+  res.redirect(url.toString());
 });
 
 // ---- /oauth/token ----
@@ -353,50 +395,28 @@ function errorHtml(error: string, description: string): string {
   </body></html>`;
 }
 
-// ---- Intuit callback dispatcher ----
-//
-// Called from server.ts /connect/callback when the state belongs to a
-// new-flow OAuth authorize request (oauth_pending). Completes the Intuit
-// dance, links/upserts the user, generates an authz code, and redirects
-// the original MCP client back to its redirect_uri with code+state.
-
-export async function completeOAuthIntuitCallback(
-  pending: NonNullable<ReturnType<typeof consumePending>>,
-  intuitCode: string,
-  realmId: string,
-): Promise<{ redirect: string }> {
-  const tokens = await exchangeCode(intuitCode);
-
-  // Each OAuth-flow login provisions a fresh user_id for clean isolation.
-  // The api_key_hash column is required (UNIQUE NOT NULL), but no human
-  // ever sees this key — OAuth-flow callers authenticate by JWT, not by
-  // qbo_… key. The plaintext is generated and immediately discarded.
-  const { hash } = generateApiKey();
-  const user = createUser(hash, "oauth-issued");
-
-  // CRITICAL: encryption key for OAuth-flow users must be derived from
-  // jwtSecret + user_id, NOT from the throwaway api-key plaintext. The
-  // request-time auth path (auth.ts authenticate()) derives the same
-  // server-side key when the JWT is presented. Mismatched keys here would
-  // make tokens irrecoverable on first call (ask me how I know).
-  saveConnection(user.id, realmId, tokens, deriveServerSideUserKey(jwtSecret, user.id));
-
-  const code = newRandomToken("ac_", 24);
-  saveAuthCode(
-    {
-      code,
-      client_id: pending.client_id,
-      user_id: user.id,
-      redirect_uri: pending.redirect_uri,
-      scope: pending.scope,
-      code_challenge: pending.code_challenge,
-      code_challenge_method: pending.code_challenge_method,
-    },
-    CODE_TTL_MS,
-  );
-
-  const url = new URL(pending.redirect_uri);
-  url.searchParams.set("code", code);
-  if (pending.client_state) url.searchParams.set("state", pending.client_state);
-  return { redirect: url.toString() };
+function consentPageHtml(state: string, clientName: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Authorize ${clientName}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 480px;
+           margin: 64px auto; padding: 0 16px; line-height: 1.5; color: #222; }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    p { color: #555; margin-top: 0; }
+    label { display: block; font-weight: 600; margin: 24px 0 6px; }
+    input { width: 100%; padding: 10px 12px; font-size: 15px; border: 1px solid #ccc;
+            border-radius: 6px; box-sizing: border-box; font-family: ui-monospace, Menlo, monospace; }
+    button { background: #2ca01c; color: white; border: 0; padding: 10px 22px;
+             border-radius: 6px; font-weight: 600; font-size: 15px; cursor: pointer; margin-top: 16px; }
+    .note { font-size: 13px; color: #888; margin-top: 14px; }
+  </style></head><body>
+  <h1>Authorize ${clientName}</h1>
+  <p>Grant ${clientName} access to Ditto's QuickBooks data via the shared admin connection.</p>
+  <form method="POST" action="/oauth/consent">
+    <input type="hidden" name="state" value="${state}">
+    <label for="team_token">Team access token</label>
+    <input type="password" name="team_token" id="team_token" autocomplete="off" autofocus required>
+    <p class="note">Get this from your team admin (Slack / 1Password). It's a shared per-team secret, not your personal credential.</p>
+    <button type="submit">Authorize</button>
+  </form>
+  </body></html>`;
 }

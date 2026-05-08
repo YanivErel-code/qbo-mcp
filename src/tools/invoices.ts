@@ -25,7 +25,7 @@ export function registerInvoiceTools(server: McpServer) {
       },
     },
     async ({ customer_id, start_date, end_date, only_open, max_results }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
         const where: string[] = [];
         if (customer_id) where.push(`CustomerRef = '${sqlEscape(customer_id)}'`);
@@ -34,7 +34,7 @@ export function registerInvoiceTools(server: McpServer) {
         if (only_open) where.push("Balance > '0'");
         const whereClause = where.length ? ` WHERE ${where.join(" AND ")}` : "";
         const q = `SELECT * FROM Invoice${whereClause} ORDER BY TxnDate DESC MAXRESULTS ${max_results}`;
-        const result = (await qboQuery(auth, q)) as any;
+        const result = (await qboQuery(q)) as any;
         return result.QueryResponse ?? result;
       });
     },
@@ -49,9 +49,9 @@ export function registerInvoiceTools(server: McpServer) {
       },
     },
     async ({ invoice_id }, extra) => {
-      const auth = await getAuthFromExtra(extra);
+      await getAuthFromExtra(extra);
       return runTool(async () => {
-        const result = (await qboGet(auth, `/invoice/${encodeURIComponent(invoice_id)}`)) as any;
+        const result = (await qboGet(`/invoice/${encodeURIComponent(invoice_id)}`)) as any;
         return result.Invoice ?? result;
       });
     },

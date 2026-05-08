@@ -7,13 +7,11 @@ import { db } from "./db.js";
 import { registerAllTools } from "./tools/index.js";
 import { buildAuthUrl, exchangeCode } from "./intuit.js";
 import { authenticate, createUser, generateApiKey } from "./auth.js";
-import { deriveEncryptionKey } from "./crypto.js";
-import { saveConnection } from "./qbo.js";
-import { oauthRouter, completeOAuthIntuitCallback } from "./oauth/routes.js";
-import { consumePending } from "./oauth/store.js";
+import { getSharedRealmInfo, saveSharedConnection } from "./qbo.js";
+import { oauthRouter } from "./oauth/routes.js";
 
 function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: "qbo-mcp", version: "0.2.0" });
+  const server = new McpServer({ name: "qbo-mcp", version: "0.3.0" });
   registerAllTools(server);
   return server;
 }
@@ -29,12 +27,7 @@ app.get("/health", (_req: Request, res: Response) => {
 // ---- OAuth metadata + endpoints (mounted at root) ----
 app.use(oauthRouter);
 
-// ---- MCP endpoint (stateless Streamable HTTP) ----
-//
-// Requires a Bearer token. On missing/invalid auth we return 401 with a
-// WWW-Authenticate header per RFC 9728 so OAuth-aware clients (claude.ai
-// web) can discover the protected-resource metadata document and start a
-// DCR/OAuth flow against this server.
+// ---- MCP endpoint ----
 
 function unauthorized(res: Response, reason: "invalid_token" | "invalid_request"): void {
   const challenge =
@@ -89,15 +82,7 @@ app.delete("/mcp", (_req: Request, res: Response) => {
   res.status(405).json({ error: "method_not_allowed" });
 });
 
-// ---- Legacy connect flow (issues a static qbo_… key for Claude Desktop / Code) ----
-
-const insertSession = db.prepare(
-  "INSERT INTO linking_sessions (state, created_at, expires_at) VALUES (?, ?, ?)",
-);
-const consumeSession = db.prepare(
-  "DELETE FROM linking_sessions WHERE state = ? AND expires_at > ? RETURNING state",
-);
-const cleanupSessions = db.prepare("DELETE FROM linking_sessions WHERE expires_at < ?");
+// ---- HTML helpers ----
 
 function htmlPage(title: string, body: string): string {
   return `<!doctype html>
@@ -109,31 +94,181 @@ function htmlPage(title: string, body: string): string {
          font-size: 13px; font-family: ui-monospace, Menlo, monospace; }
   pre  { background: #f3f3f3; padding: 14px; border-radius: 6px;
          overflow-x: auto; font-size: 13px; }
-  a.button { display: inline-block; background: #2ca01c; color: white;
-             padding: 10px 20px; border-radius: 6px; text-decoration: none;
-             font-weight: 600; }
+  a.button, button { display: inline-block; background: #2ca01c; color: white;
+                     padding: 10px 20px; border-radius: 6px; text-decoration: none;
+                     font-weight: 600; border: 0; font-size: 15px; cursor: pointer; }
   .warn { background: #fff8e1; border-left: 4px solid #f2b200;
           padding: 10px 14px; border-radius: 4px; margin: 16px 0; }
+  label { display: block; font-weight: 600; margin: 16px 0 6px; }
+  input { width: 100%; padding: 10px 12px; font-size: 15px; border: 1px solid #ccc;
+          border-radius: 6px; box-sizing: border-box; font-family: inherit; }
 </style></head><body>${body}</body></html>`;
 }
 
+// ---- Landing page ----
+
 app.get("/", (_req: Request, res: Response) => {
+  const realm = getSharedRealmInfo();
+  const realmStatus = realm
+    ? `Connected to QBO realm <code>${realm.realmId}</code>`
+    : `<strong>No QBO admin connection bootstrapped yet.</strong>`;
   res.type("html").send(
     htmlPage(
       "QBO MCP",
       `<h1>QuickBooks Online MCP Server</h1>
-       <p>Read-only access to QuickBooks Online via the Model Context Protocol.</p>
-       <p>Environment: <code>${config.intuit.environment}</code></p>
-       <p><a class="button" href="/connect/quickbooks">Connect QuickBooks (legacy static-key flow)</a></p>
-       <p>OAuth-aware MCP clients (claude.ai web) should add this URL as a custom connector
-          and let the OAuth dance run automatically:
-          <code>${config.publicBaseUrl}/mcp</code>
-       </p>`,
+       <p>Read-only access to QuickBooks Online via the Model Context Protocol, shared across the team.</p>
+       <p>Environment: <code>${config.intuit.environment}</code><br>${realmStatus}</p>
+
+       <h2>Get a personal access key (team members)</h2>
+       <p>If you've been given a team token, mint yourself a personal Bearer to plug into Claude Desktop / Code:</p>
+       <p><a class="button" href="/team-signup">Sign up for an access key</a></p>
+
+       <h2>Bootstrap or re-link the QBO admin connection</h2>
+       <p>For the team admin only — needs the admin bootstrap token. This (re)connects DittoLive's QuickBooks under one shared admin slot at Intuit.</p>
+       <p><a class="button" style="background:#0a4dad" href="/connect/quickbooks">Re-link QBO admin (admin only)</a></p>`,
     ),
   );
 });
 
-app.get("/connect/quickbooks", (_req: Request, res: Response) => {
+// ---- /team-signup — coworker self-service for static keys ----
+
+app.get("/team-signup", (_req: Request, res: Response) => {
+  if (!config.teamSignupToken) {
+    res.status(503).type("html").send(
+      htmlPage(
+        "Team signup disabled",
+        `<h1>Team signup is disabled</h1>
+         <p>The server's <code>TEAM_SIGNUP_TOKEN</code> env var is empty. Ask the admin to set it.</p>`,
+      ),
+    );
+    return;
+  }
+  res.type("html").send(
+    htmlPage(
+      "Team signup",
+      `<h1>Team signup</h1>
+       <p>Paste the team access token your admin shared with you. If valid, you'll get a personal <code>qbo_…</code> Bearer key
+          to drop into your Claude Desktop / Claude Code config.</p>
+       <form method="POST" action="/team-signup">
+         <label for="token">Team access token</label>
+         <input type="password" name="token" id="token" autocomplete="off" autofocus required>
+         <label for="label">Optional label (your email or name, for your own audit)</label>
+         <input type="text" name="label" id="label" autocomplete="off" placeholder="e.g. firstname.lastname@ditto.com">
+         <p style="margin-top:18px"><button type="submit">Generate my key</button></p>
+       </form>`,
+    ),
+  );
+});
+
+app.post("/team-signup", (req: Request, res: Response) => {
+  if (!config.teamSignupToken) {
+    res.status(503).json({ error: "team_signup_disabled" });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, string>;
+  if (!body.token || body.token !== config.teamSignupToken) {
+    res.status(403).type("html").send(
+      htmlPage(
+        "Forbidden",
+        `<h1>Invalid team token</h1>
+         <p>That token didn't match. Ask your admin for the current value.</p>
+         <p><a href="/team-signup">Try again</a></p>`,
+      ),
+    );
+    return;
+  }
+  const label = body.label?.trim() || null;
+  const { plain, hash } = generateApiKey();
+  const user = createUser(hash, label);
+
+  const cfgSnippet = JSON.stringify(
+    {
+      mcpServers: {
+        quickbooks: {
+          command: "npx",
+          args: [
+            "-y",
+            "mcp-remote",
+            `${config.publicBaseUrl}/mcp`,
+            "--header",
+            `Authorization:Bearer ${plain}`,
+          ],
+        },
+      },
+    },
+    null,
+    2,
+  );
+
+  res.type("html").send(
+    htmlPage(
+      "Your access key",
+      `<h1>You're in</h1>
+       <p>User <code>${user.id}</code>${label ? ` (${label})` : ""} created.</p>
+       <div class="warn"><strong>Save this key now — it will not be shown again.</strong></div>
+       <pre><code>${plain}</code></pre>
+       <h3>Claude Desktop config (~/Library/Application Support/Claude/claude_desktop_config.json)</h3>
+       <pre><code>${cfgSnippet.replace(/</g, "&lt;")}</code></pre>
+       <h3>Claude Code CLI</h3>
+       <pre><code>claude mcp add --scope user --transport http quickbooks ${config.publicBaseUrl}/mcp \\
+  --header "Authorization: Bearer ${plain}"</code></pre>`,
+    ),
+  );
+});
+
+// ---- /connect/quickbooks — admin-only Intuit OAuth bootstrap ----
+//
+// Whoever runs this *replaces* the QBO admin slot at Intuit's side and
+// becomes the sole upstream identity for ALL team users' API calls.
+// Gate it.
+
+const insertSession = db.prepare(
+  "INSERT INTO linking_sessions (state, created_at, expires_at) VALUES (?, ?, ?)",
+);
+const consumeSession = db.prepare(
+  "DELETE FROM linking_sessions WHERE state = ? AND expires_at > ? RETURNING state",
+);
+const cleanupSessions = db.prepare("DELETE FROM linking_sessions WHERE expires_at < ?");
+
+function checkAdminToken(provided: string | undefined): boolean {
+  if (!config.adminBootstrapToken) {
+    // Token unset → bootstrap is open. Log loudly so the operator knows.
+    console.warn(
+      "ADMIN_BOOTSTRAP_TOKEN is unset — /connect/quickbooks is open to anyone who can reach the URL.",
+    );
+    return true;
+  }
+  return provided === config.adminBootstrapToken;
+}
+
+app.get("/connect/quickbooks", (req: Request, res: Response) => {
+  const token = (req.query.token as string | undefined) ?? undefined;
+  if (!checkAdminToken(token)) {
+    if (config.adminBootstrapToken && !token) {
+      // Show a prompt page so the admin can paste the token without
+      // putting it in URL bar history.
+      res.type("html").send(
+        htmlPage(
+          "Admin bootstrap",
+          `<h1>Admin bootstrap</h1>
+           <p>This will (re)link DittoLive's QuickBooks under the shared admin slot at Intuit.
+              Running this kicks out the previous admin (if any) and assigns the user
+              completing the OAuth dance as the new admin.</p>
+           <form method="GET" action="/connect/quickbooks">
+             <label for="token">Admin bootstrap token</label>
+             <input type="password" name="token" id="token" autocomplete="off" autofocus required>
+             <p style="margin-top:16px"><button type="submit">Continue to Intuit</button></p>
+           </form>`,
+        ),
+      );
+      return;
+    }
+    res.status(403).type("html").send(
+      htmlPage("Forbidden", `<h1>Invalid admin bootstrap token</h1>`),
+    );
+    return;
+  }
+
   cleanupSessions.run(Date.now());
   const state = randomBytes(24).toString("base64url");
   const now = Date.now();
@@ -141,7 +276,7 @@ app.get("/connect/quickbooks", (_req: Request, res: Response) => {
   res.redirect(buildAuthUrl(state));
 });
 
-// ---- Intuit redirect — dispatched by which state table owns the state ----
+// ---- Intuit redirect ----
 
 app.get("/connect/callback", async (req: Request, res: Response) => {
   const q = req.query as Record<string, string | undefined>;
@@ -159,44 +294,18 @@ app.get("/connect/callback", async (req: Request, res: Response) => {
   }
   if (!code || !state || !realmId) {
     res.status(400).type("html").send(
-      htmlPage(
-        "Missing parameters",
-        `<h1>Missing parameters</h1>
-         <p>The callback URL was invoked without the required parameters.</p>`,
-      ),
+      htmlPage("Missing parameters", `<h1>Missing parameters</h1>`),
     );
     return;
   }
 
-  // 1. Try the new OAuth flow first.
-  const pending = consumePending(state);
-  if (pending) {
-    try {
-      const { redirect } = await completeOAuthIntuitCallback(pending, code, realmId);
-      res.redirect(redirect);
-      return;
-    } catch (e) {
-      console.error("OAuth-flow callback error:", e);
-      res.status(500).type("html").send(
-        htmlPage(
-          "Error",
-          `<h1>Something went wrong</h1>
-           <pre><code>${(e as Error).message}</code></pre>`,
-        ),
-      );
-      return;
-    }
-  }
-
-  // 2. Fall back to the legacy linking-session (issues static qbo_… key).
-  const legacy = consumeSession.get(state, Date.now());
-  if (!legacy) {
+  const session = consumeSession.get(state, Date.now());
+  if (!session) {
     res.status(400).type("html").send(
       htmlPage(
         "Invalid or expired",
         `<h1>Invalid or expired state</h1>
-         <p>The link may have been used already or expired (15 minute limit).</p>
-         <p><a href="/connect/quickbooks">Start again</a></p>`,
+         <p>Start again from <a href="/connect/quickbooks">/connect/quickbooks</a>.</p>`,
       ),
     );
     return;
@@ -204,35 +313,13 @@ app.get("/connect/callback", async (req: Request, res: Response) => {
 
   try {
     const tokens = await exchangeCode(code);
-    const { plain, hash } = generateApiKey();
-    const user = createUser(hash);
-    saveConnection(user.id, realmId, tokens, deriveEncryptionKey(plain));
-
-    const cfgSnippet = JSON.stringify(
-      {
-        mcpServers: {
-          quickbooks: {
-            url: `${config.publicBaseUrl}/mcp`,
-            headers: { Authorization: `Bearer ${plain}` },
-          },
-        },
-      },
-      null,
-      2,
-    );
-
+    saveSharedConnection(realmId, tokens);
     res.type("html").send(
       htmlPage(
-        "Connected",
-        `<h1>QuickBooks connected</h1>
-         <p>Company <code>realmId ${realmId}</code> linked to user <code>${user.id}</code>.</p>
-         <div class="warn"><strong>Save this API key now — it will not be shown again.</strong></div>
-         <pre><code>${plain}</code></pre>
-         <h3>Claude Code / Claude Desktop MCP config</h3>
-         <pre><code>${cfgSnippet.replace(/</g, "&lt;")}</code></pre>
-         <p>Or via CLI:</p>
-         <pre><code>claude mcp add --transport http quickbooks ${config.publicBaseUrl}/mcp \\
-  --header "Authorization: Bearer ${plain}"</code></pre>`,
+        "QBO admin connection established",
+        `<h1>QBO admin connection established</h1>
+         <p>Realm <code>${realmId}</code> is now the shared upstream for all team users.</p>
+         <p>Anyone who minted a key at <a href="/team-signup">/team-signup</a> can now query QBO via Claude.</p>`,
       ),
     );
   } catch (e) {
