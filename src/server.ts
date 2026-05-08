@@ -69,10 +69,16 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 }
 
 app.post("/mcp", requireAuth, async (req: Request, res: Response) => {
-  // Surface the tool name to the request logger so /admin shows what was called.
-  const body = req.body as { method?: string; params?: { name?: string } } | undefined;
-  if (body?.method === "tools/call" && typeof body.params?.name === "string") {
-    res.locals.toolName = body.params.name;
+  // Surface JSON-RPC method + tool name to the request logger so /admin
+  // shows what was called. Handles both single messages and batched arrays
+  // (we capture the first message's method as a representative).
+  const raw = req.body;
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (first && typeof first.method === "string") {
+    res.locals.rpcMethod = first.method;
+    if (first.method === "tools/call" && typeof first.params?.name === "string") {
+      res.locals.toolName = first.params.name;
+    }
   }
 
   const server = buildMcpServer();

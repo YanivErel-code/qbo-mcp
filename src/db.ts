@@ -120,3 +120,12 @@ CREATE INDEX IF NOT EXISTS idx_request_log_ts ON request_log(ts);
 CREATE INDEX IF NOT EXISTS idx_request_log_user ON request_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_request_log_tool ON request_log(tool_name) WHERE tool_name IS NOT NULL;
 `);
+
+// Idempotent column add for rpc_method (existing rows will have NULL, which
+// is fine — they just won't show the protocol method in the admin log).
+try {
+  db.exec("ALTER TABLE request_log ADD COLUMN rpc_method TEXT");
+} catch (e) {
+  // Already exists — better-sqlite3 throws "duplicate column name". Ignore.
+  if (!String((e as Error).message).includes("duplicate column")) throw e;
+}

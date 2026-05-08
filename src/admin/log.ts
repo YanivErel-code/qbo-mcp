@@ -6,9 +6,9 @@ const MAX_ERROR_LEN = 240;
 
 const insert = db.prepare(
   `INSERT INTO request_log
-     (ts, user_id, user_label, auth_kind, method, path, tool_name,
+     (ts, user_id, user_label, auth_kind, method, path, tool_name, rpc_method,
       status, duration_ms, remote_ip, error)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 
 /**
@@ -31,6 +31,7 @@ export function requestLogMiddleware(req: Request, res: Response, next: NextFunc
     try {
       const auth: AuthedUser | undefined = (req as any).authedUser;
       const tool: string | undefined = res.locals.toolName;
+      const rpc: string | undefined = res.locals.rpcMethod;
       const err: string | undefined = res.locals.errorNote;
       const remoteIp =
         (req.header("cf-connecting-ip") ??
@@ -46,6 +47,7 @@ export function requestLogMiddleware(req: Request, res: Response, next: NextFunc
         req.method,
         req.originalUrl.split("?")[0], // strip query (avoid logging tokens)
         tool ?? null,
+        rpc ?? null,
         res.statusCode,
         Date.now() - start,
         remoteIp,

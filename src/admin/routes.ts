@@ -177,7 +177,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
   const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const recent = db.prepare(
-    `SELECT ts, user_id, user_label, auth_kind, method, path, tool_name,
+    `SELECT ts, user_id, user_label, auth_kind, method, path, tool_name, rpc_method,
             status, duration_ms, remote_ip, error
        FROM request_log
        ${whereSql}
@@ -191,6 +191,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     method: string;
     path: string;
     tool_name: string | null;
+    rpc_method: string | null;
     status: number;
     duration_ms: number | null;
     remote_ip: string | null;
@@ -231,7 +232,14 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     const kindCell = r.auth_kind
       ? `<span class="pill ${r.auth_kind}">${r.auth_kind}</span>`
       : "";
-    const tool = r.tool_name ? `<code>${escapeHtml(r.tool_name)}</code>` : "";
+    // Tool name when it's a tools/call; fall back to the JSON-RPC method
+    // for protocol noise (initialize, tools/list, ping, notifications/*).
+    // Visually distinguish so real tool invocations stand out.
+    const tool = r.tool_name
+      ? `<code>${escapeHtml(r.tool_name)}</code>`
+      : r.rpc_method
+        ? `<span class="muted" style="font-style:italic" title="JSON-RPC method (not a tool call)">${escapeHtml(r.rpc_method)}</span>`
+        : "";
     const errCell = r.error
       ? `<details><summary class="muted">err</summary><pre>${escapeHtml(r.error)}</pre></details>`
       : "";
