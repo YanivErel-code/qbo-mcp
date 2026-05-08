@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { identifyFromCfAccess } from "../oauth/cf_access.js";
 import { getSharedRealmInfo } from "../qbo.js";
+import { findUserByLabel } from "../auth.js";
 
 export const adminRouter = Router();
 
@@ -41,6 +42,13 @@ async function requireAdmin(req: Request, res: Response): Promise<AdminContext |
            append <code>?token=…</code> to the URL.</p>`),
     );
     return null;
+  }
+  // Attribute admin actions to a real user_id when the email matches one
+  // (CF Access path). This makes /admin browsing show up in the audit log
+  // under the admin's email instead of as anonymous "—".
+  if (ctx.email) {
+    const user = findUserByLabel(ctx.email);
+    if (user) (req as any).authedUser = { user, kind: "oauth" };
   }
   return ctx;
 }
