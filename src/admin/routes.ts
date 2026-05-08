@@ -85,12 +85,16 @@ function page(title: string, body: string): string {
   details summary { cursor: pointer; }
   pre { background: #f3f3f3; padding: 8px; border-radius: 4px; font-size: 12px;
         white-space: pre-wrap; word-break: break-word; max-width: 80ch; }
+  .filter-panel { border: 1px solid #ccc; border-radius: 6px; padding: 8px 12px;
+                  margin-top: 4px; min-width: 240px; background: #fafafa;
+                  max-height: 280px; overflow-y: auto; }
   @media (prefers-color-scheme: dark) {
     body { background: #1a1a1a; color: #ddd; }
     th { background: #222; } th, td { border-color: #333; }
     tr:hover td { background: #222; }
     pre { background: #222; }
     h2 { border-color: #333; }
+    .filter-panel { background: #222; border-color: #444; }
   }
 </style></head><body>${body}</body></html>`;
 }
@@ -158,12 +162,20 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
       params.push(uid);
     }
   }
-  if (q.label) {
-    // Match against the denormalized user_label column so the filter
-    // survives user_id rotation (dedupe replaces api_key_hash but keeps
-    // the same row; historical rows with old user_ids stay attributable).
+  // ?label= can be a single string or an array (multiple ?label= params).
+  // Match against the denormalized user_label column so filtering survives
+  // user_id rotation from email-based dedupe.
+  const labelValues = Array.isArray(q.label)
+    ? (q.label as string[]).filter((s) => typeof s === "string" && s.length > 0)
+    : q.label
+      ? [q.label as string]
+      : [];
+  if (labelValues.length === 1) {
     filters.push("user_label = ?");
-    params.push(q.label);
+    params.push(labelValues[0]);
+  } else if (labelValues.length > 1) {
+    filters.push(`user_label IN (${labelValues.map(() => "?").join(",")})`);
+    labelValues.forEach((l) => params.push(l));
   }
   if (q.since) {
     const m = /^(\d+)([mhd])$/.exec(q.since);
@@ -281,7 +293,13 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     chip("Last 24h", "since=24h", q.since === "24h") +
     chip("Last 7d", "since=7d", q.since === "7d") +
     (q.user ? chip(`user=${q.user}`, `user=${q.user}`, true) : "") +
-    (q.label ? chip(`label=${escapeHtml(q.label)}`, `label=${encodeURIComponent(q.label)}`, true) : "") +
+    (labelValues.length > 0
+      ? chip(
+          `label=${labelValues.length === 1 ? escapeHtml(labelValues[0]) : `${labelValues.length} users`}`,
+          labelValues.map((v) => `label=${encodeURIComponent(v)}`).join("&"),
+          true,
+        )
+      : "") +
     (q.path ? chip(`path~${escapeHtml(q.path)}`, `path=${encodeURIComponent(q.path)}`, true) : "") +
     (q.tool ? chip(`tool=${escapeHtml(q.tool)}`, `tool=${encodeURIComponent(q.tool)}`, true) : "");
 
@@ -299,18 +317,40 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
   const tokenInput = tokenPart
     ? `<input type="hidden" name="token" value="${escapeHtml(String(req.query.token))}">`
     : "";
+
+  // Multi-select via checkboxes inside <details>. Submitting picks all
+  // checked boxes; the form posts back to /admin with each as ?label=…
+  // (Express parses multiple identically-named query params into an
+  // array for us). One-line label click on a user_id still works as a
+  // single-user shortcut.
+  const labelCheckboxes = knownLabels.map((l) => {
+    const checked = labelValues.includes(l) ? "checked" : "";
+    return `
+      <label style="display:block;font-weight:normal;font-size:13px;margin:4px 0;cursor:pointer">
+        <input type="checkbox" name="label" value="${escapeHtml(l)}" ${checked} style="margin-right:6px">
+        ${escapeHtml(l)}
+      </label>`;
+  }).join("");
+
+  const summary = labelValues.length === 0
+    ? "filter by user"
+    : labelValues.length === 1
+      ? `filter by user (${escapeHtml(labelValues[0])})`
+      : `filter by user (${labelValues.length} selected)`;
+
   const labelDropdown = `
     <form method="GET" action="/admin" style="display:inline-block;margin-right:8px;vertical-align:middle">
       ${tokenInput}
-      <label class="muted" style="font-size:13px">filter by user:
-        <select name="label" onchange="this.form.submit()" style="font-size:13px;padding:3px 6px;margin-left:4px">
-          <option value="">— all —</option>
-          ${knownLabels.map((l) => {
-            const sel = q.label === l ? "selected" : "";
-            return `<option value="${escapeHtml(l)}" ${sel}>${escapeHtml(l)}</option>`;
-          }).join("")}
-        </select>
-      </label>
+      <details ${labelValues.length > 0 ? "open" : ""} style="display:inline-block">
+        <summary class="muted" style="font-size:13px;cursor:pointer;display:inline">${summary}</summary>
+        <div class="filter-panel">
+          ${labelCheckboxes}
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <button type="submit" style="background:#2ca01c;color:white;border:0;padding:5px 14px;border-radius:4px;font-size:13px;cursor:pointer">Apply</button>
+            <a href="/admin${tokenPart}" style="font-size:12px">Clear</a>
+          </div>
+        </div>
+      </details>
     </form>`;
 
   res.type("html").send(page(
