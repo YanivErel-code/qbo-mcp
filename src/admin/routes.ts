@@ -135,13 +135,48 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     request_count: number;
   }>;
 
+  // ---- log filters via query string ----
+  const q = req.query as Record<string, string | undefined>;
+  const filters: string[] = [];
+  const params: unknown[] = [];
+
+  if (q.failures === "1") {
+    filters.push("status >= 400");
+  }
+  if (q.user) {
+    const uid = Number(q.user);
+    if (Number.isFinite(uid)) {
+      filters.push("user_id = ?");
+      params.push(uid);
+    }
+  }
+  if (q.since) {
+    const m = /^(\d+)([mhd])$/.exec(q.since);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      const mult = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as "m" | "h" | "d"];
+      filters.push("ts >= ?");
+      params.push(Date.now() - n * mult);
+    }
+  }
+  if (q.path) {
+    filters.push("path LIKE ?");
+    params.push(`%${q.path}%`);
+  }
+  if (q.tool) {
+    filters.push("tool_name = ?");
+    params.push(q.tool);
+  }
+
+  const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const recent = db.prepare(
     `SELECT ts, user_id, user_label, auth_kind, method, path, tool_name,
-            status, duration_ms, error
+            status, duration_ms, remote_ip, error
        FROM request_log
+       ${whereSql}
        ORDER BY ts DESC
        LIMIT 100`,
-  ).all() as Array<{
+  ).all(...params) as Array<{
     ts: number;
     user_id: number | null;
     user_label: string | null;
@@ -151,10 +186,14 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     tool_name: string | null;
     status: number;
     duration_ms: number | null;
+    remote_ip: string | null;
     error: string | null;
   }>;
 
   const totalRequests = (db.prepare("SELECT COUNT(*) AS c FROM request_log").get() as any).c;
+  const filteredCount = filters.length
+    ? (db.prepare(`SELECT COUNT(*) AS c FROM request_log ${whereSql}`).get(...params) as any).c
+    : totalRequests;
 
   const userRows = users.map((u) => {
     const label = u.label ? escapeHtml(u.label) : '<span class="muted">—</span>';
@@ -180,7 +219,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
   const logRows = recent.map((r) => {
     const statusClass = r.status >= 400 ? "err" : "ok";
     const userCell = r.user_id
-      ? `<span class="mono">${r.user_id}</span>${r.user_label ? ` ${escapeHtml(r.user_label)}` : ""}`
+      ? `<a href="/admin?user=${r.user_id}${tokenPart ? `&token=${req.query.token}` : ""}" class="mono">${r.user_id}</a>${r.user_label ? ` ${escapeHtml(r.user_label)}` : ""}`
       : '<span class="muted">—</span>';
     const kindCell = r.auth_kind
       ? `<span class="pill ${r.auth_kind}">${r.auth_kind}</span>`
@@ -188,6 +227,9 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     const tool = r.tool_name ? `<code>${escapeHtml(r.tool_name)}</code>` : "";
     const errCell = r.error
       ? `<details><summary class="muted">err</summary><pre>${escapeHtml(r.error)}</pre></details>`
+      : "";
+    const ipCell = r.remote_ip
+      ? `<code class="muted" title="${escapeHtml(r.remote_ip)}">${escapeHtml(r.remote_ip.length > 16 ? r.remote_ip.slice(0, 13) + "…" : r.remote_ip)}</code>`
       : "";
     return `
       <tr>
@@ -197,9 +239,27 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
         <td>${tool}</td>
         <td><span class="pill ${statusClass}">${r.status}</span></td>
         <td class="nowrap">${r.duration_ms ?? "—"} ms</td>
+        <td class="nowrap">${ipCell}</td>
         <td>${errCell}</td>
       </tr>`;
   }).join("");
+
+  // Filter chip bar — preserves the admin token (if used) on every link.
+  function chip(label: string, qs: string, active: boolean): string {
+    const tokenSep = tokenPart ? `&token=${req.query.token}` : "";
+    const cls = active ? "pill ok" : "pill";
+    return `<a class="${cls}" style="margin-right:6px;text-decoration:none" href="/admin?${qs}${tokenSep}">${label}</a>`;
+  }
+  const noFilters = filters.length === 0;
+  const filterBar =
+    chip("All", "", noFilters) +
+    chip("Failures", "failures=1", q.failures === "1") +
+    chip("Last 1h", "since=1h", q.since === "1h") +
+    chip("Last 24h", "since=24h", q.since === "24h") +
+    chip("Last 7d", "since=7d", q.since === "7d") +
+    (q.user ? chip(`user=${q.user}`, `user=${q.user}`, true) : "") +
+    (q.path ? chip(`path~${escapeHtml(q.path)}`, `path=${encodeURIComponent(q.path)}`, true) : "") +
+    (q.tool ? chip(`tool=${escapeHtml(q.tool)}`, `tool=${encodeURIComponent(q.tool)}`, true) : "");
 
   res.type("html").send(page(
     "qbo-mcp admin",
@@ -226,12 +286,21 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
      </table>
 
      <h2>Recent activity
-       <span class="muted" style="font-size:14px;font-weight:normal">last 100 of ${totalRequests}</span>
+       <span class="muted" style="font-size:14px;font-weight:normal">
+         showing ${recent.length} of ${filteredCount}${filters.length ? ` matching` : ""}
+         ${filters.length ? ` (out of ${totalRequests} total)` : ""}
+       </span>
      </h2>
+     <p>${filterBar}</p>
      <table>
-       <thead><tr><th>when</th><th>user</th><th>request</th><th>tool</th><th>status</th><th>dur</th><th></th></tr></thead>
-       <tbody>${logRows || `<tr><td colspan="7" class="muted">No requests logged yet.</td></tr>`}</tbody>
-     </table>`,
+       <thead><tr><th>when</th><th>user</th><th>request</th><th>tool</th><th>status</th><th>dur</th><th>ip</th><th></th></tr></thead>
+       <tbody>${logRows || `<tr><td colspan="8" class="muted">No requests match.</td></tr>`}</tbody>
+     </table>
+     <p class="muted" style="font-size:12px;margin-top:24px">
+       Custom filters via query string: <code>?failures=1</code>, <code>?user=8</code>,
+       <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
+       <code>?path=oauth</code>, <code>?tool=qbo_query</code>. Combine freely.
+     </p>`,
   ));
 });
 
