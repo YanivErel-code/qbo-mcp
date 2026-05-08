@@ -1,7 +1,7 @@
 import { type Request, type Response, Router } from "express";
 import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
-import { createUser, generateApiKey } from "../auth.js";
+import { createUser, generateApiKey, upsertUserByLabel } from "../auth.js";
 import { signAccessToken } from "./jwt.js";
 import { cfAccessEnabled, identifyFromCfAccess } from "./cf_access.js";
 import {
@@ -165,8 +165,10 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
   if (cfAccessEnabled) {
     const identity = await identifyFromCfAccess(req);
     if (identity) {
+      // Dedupe by verified email — same person across multiple OAuth grants
+      // gets one stable user_id, not a new row each time.
       const { hash } = generateApiKey();
-      const user = createUser(hash, identity.email);
+      const user = upsertUserByLabel(identity.email, hash);
       const code = newRandomToken("ac_", 24);
       saveAuthCode(
         {

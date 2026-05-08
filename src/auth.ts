@@ -49,6 +49,35 @@ export function findUserById(id: number): User | null {
   return row ?? null;
 }
 
+export function findUserByLabel(label: string): User | null {
+  const row = db
+    .prepare("SELECT id, label FROM users WHERE label = ? LIMIT 1")
+    .get(label) as { id: number; label: string | null } | undefined;
+  return row ?? null;
+}
+
+/**
+ * Find-or-create a user keyed by `label` (typically a verified email from
+ * Cloudflare Access). If a user with that label already exists, their
+ * api_key_hash is rotated to the new value (so the previous static key
+ * stops working — last-issued-key-wins). Otherwise a fresh row is created.
+ *
+ * Use this on flows where we trust the label as a stable identity (CF
+ * Access JWT email). Don't use it for free-form user-typed labels — those
+ * are not authenticated and the caller could spoof another user's row.
+ */
+export function upsertUserByLabel(label: string, apiKeyHash: string): User {
+  const existing = findUserByLabel(label);
+  if (existing) {
+    db.prepare("UPDATE users SET api_key_hash = ? WHERE id = ?").run(
+      apiKeyHash,
+      existing.id,
+    );
+    return existing;
+  }
+  return createUser(apiKeyHash, label);
+}
+
 /**
  * Resolve an `Authorization: Bearer …` header to an AuthedUser, trying both
  * the JWT path (claude.ai web / OAuth flow) and the static-key path (Claude

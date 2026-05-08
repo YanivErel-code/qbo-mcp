@@ -99,4 +99,24 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_oauth_rt_user ON oauth_refresh_tokens(user_id);
+
+-- ---- Per-request audit log (powers the /admin activity feed) ----
+CREATE TABLE IF NOT EXISTS request_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER,           -- nullable: anonymous (no Bearer)
+  user_label TEXT,           -- denormalized so listing the log doesn't need a join
+  auth_kind TEXT,            -- "static" | "oauth" | NULL
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  tool_name TEXT,            -- only set for MCP tools/call
+  status INTEGER NOT NULL,
+  duration_ms INTEGER,
+  remote_ip TEXT,
+  error TEXT                 -- truncated description on failures
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_log_ts ON request_log(ts);
+CREATE INDEX IF NOT EXISTS idx_request_log_user ON request_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_request_log_tool ON request_log(tool_name) WHERE tool_name IS NOT NULL;
 `);

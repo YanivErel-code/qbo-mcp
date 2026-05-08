@@ -28,6 +28,11 @@ const schema = z.object({
   // Falls back to the team-token form when these are unset.
   CF_ACCESS_TEAM_DOMAIN: z.string().optional(), // e.g. "erel.cloudflareaccess.com"
   CF_ACCESS_AUD: z.string().optional(),         // the per-application AUD tag
+
+  // Email of the admin user. When a Cf-Access-Jwt-Assertion arrives with this
+  // email, /admin pages render. Otherwise /admin requires the
+  // ADMIN_BOOTSTRAP_TOKEN as a ?token= query param.
+  ADMIN_EMAIL: z.string().email().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -62,4 +67,5 @@ export const config = {
     teamDomain: env.CF_ACCESS_TEAM_DOMAIN ?? null,
     aud: env.CF_ACCESS_AUD ?? null,
   },
+  adminEmail: env.ADMIN_EMAIL ?? null,
 };

@@ -6,10 +6,12 @@ import { config } from "./config.js";
 import { db } from "./db.js";
 import { registerAllTools } from "./tools/index.js";
 import { buildAuthUrl, exchangeCode } from "./intuit.js";
-import { authenticate, createUser, generateApiKey } from "./auth.js";
+import { authenticate, createUser, generateApiKey, upsertUserByLabel } from "./auth.js";
 import { getSharedRealmInfo, saveSharedConnection } from "./qbo.js";
 import { oauthRouter } from "./oauth/routes.js";
 import { cfAccessEnabled, identifyFromCfAccess } from "./oauth/cf_access.js";
+import { adminRouter } from "./admin/routes.js";
+import { requestLogMiddleware } from "./admin/log.js";
 
 function buildMcpServer(): McpServer {
   const server = new McpServer({ name: "qbo-mcp", version: "0.3.0" });
@@ -21,12 +23,18 @@ export const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
+// Per-request audit log — runs first so it sees every status code.
+app.use(requestLogMiddleware);
+
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
 // ---- OAuth metadata + endpoints (mounted at root) ----
 app.use(oauthRouter);
+
+// ---- Admin UI (gated by CF Access email match OR ADMIN_BOOTSTRAP_TOKEN) ----
+app.use(adminRouter);
 
 // ---- MCP endpoint ----
 
@@ -61,6 +69,12 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 }
 
 app.post("/mcp", requireAuth, async (req: Request, res: Response) => {
+  // Surface the tool name to the request logger so /admin shows what was called.
+  const body = req.body as { method?: string; params?: { name?: string } } | undefined;
+  if (body?.method === "tools/call" && typeof body.params?.name === "string") {
+    res.locals.toolName = body.params.name;
+  }
+
   const server = buildMcpServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
@@ -72,6 +86,7 @@ app.post("/mcp", requireAuth, async (req: Request, res: Response) => {
     await transport.handleRequest(req, res, req.body);
   } catch (e) {
     console.error("MCP request failed:", e);
+    res.locals.errorNote = (e as Error).message;
     if (!res.headersSent) res.status(500).json({ error: "internal" });
   }
 });
@@ -168,12 +183,13 @@ function renderSignupResultHtml(plain: string, label: string | null, userId: num
 
 app.get("/team-signup", async (req: Request, res: Response) => {
   // Fast path: Cloudflare Access already authenticated this user — mint
-  // their key immediately, no token form.
+  // their key immediately, no token form. Dedupe by email so the same
+  // person re-signing-up reuses their user_id and just rotates the key.
   if (cfAccessEnabled) {
     const identity = await identifyFromCfAccess(req);
     if (identity) {
       const { plain, hash } = generateApiKey();
-      const user = createUser(hash, identity.email);
+      const user = upsertUserByLabel(identity.email, hash);
       res.type("html").send(renderSignupResultHtml(plain, identity.email, user.id));
       return;
     }
