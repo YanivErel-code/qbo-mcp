@@ -269,14 +269,16 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     (q.path ? chip(`path~${escapeHtml(q.path)}`, `path=${encodeURIComponent(q.path)}`, true) : "") +
     (q.tool ? chip(`tool=${escapeHtml(q.tool)}`, `tool=${encodeURIComponent(q.tool)}`, true) : "");
 
-  // Distinct labels ever seen in the log — broader than just current users
-  // (so revoked users' history is still selectable). Sorted with NULLs out.
+  // Active users only (excludes the user_id=0 sentinel and any revoked rows).
+  // For forensics on a revoked user, set ?label=… directly in the URL —
+  // the request_log retains their history under the denormalized label.
   const knownLabels = (db.prepare(
-    `SELECT DISTINCT user_label
-       FROM request_log
-      WHERE user_label IS NOT NULL
-      ORDER BY user_label`,
-  ).all() as Array<{ user_label: string }>).map((r) => r.user_label);
+    `SELECT DISTINCT label
+       FROM users
+      WHERE label IS NOT NULL
+        AND id != 0
+      ORDER BY label`,
+  ).all() as Array<{ label: string }>).map((r) => r.label);
 
   const tokenInput = tokenPart
     ? `<input type="hidden" name="token" value="${escapeHtml(String(req.query.token))}">`
