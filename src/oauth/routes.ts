@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
 import { createUser, generateApiKey } from "../auth.js";
 import { signAccessToken } from "./jwt.js";
+import { cfAccessEnabled, identifyFromCfAccess } from "./cf_access.js";
 import {
   cleanupPending,
   clientSecretMatches,
@@ -121,7 +122,7 @@ oauthRouter.post("/oauth/register", (req: Request, res: Response) => {
 // Once the user pastes a valid token, we issue an auth code and redirect
 // back to the MCP client.
 
-oauthRouter.get("/oauth/authorize", (req: Request, res: Response) => {
+oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
   const q = req.query as Record<string, string | undefined>;
   const {
     response_type,
@@ -157,6 +158,40 @@ oauthRouter.get("/oauth/authorize", (req: Request, res: Response) => {
     return;
   }
 
+  // -------- Fast path: Cloudflare Access already authenticated this user --------
+  // If the request carries a valid Cf-Access-Jwt-Assertion (issued by your
+  // CF Access policy, e.g. "Allow emails @ditto.com via Google"), trust it
+  // as the user's identity and skip the team-token consent page entirely.
+  if (cfAccessEnabled) {
+    const identity = await identifyFromCfAccess(req);
+    if (identity) {
+      const { hash } = generateApiKey();
+      const user = createUser(hash, identity.email);
+      const code = newRandomToken("ac_", 24);
+      saveAuthCode(
+        {
+          code,
+          client_id,
+          user_id: user.id,
+          redirect_uri,
+          scope: scope ?? SUPPORTED_SCOPE,
+          code_challenge,
+          code_challenge_method: challengeMethod,
+        },
+        CODE_TTL_MS,
+      );
+      const url = new URL(redirect_uri);
+      url.searchParams.set("code", code);
+      if (state) url.searchParams.set("state", state);
+      res.redirect(url.toString());
+      return;
+    }
+    // CF Access is enabled but the request didn't pass through it (no JWT).
+    // That's unusual — typically a CF Access policy on this URL guarantees
+    // the JWT will be present. We fall through to the team-token form so
+    // local/dev access stays workable.
+  }
+
   cleanupPending();
   const internalState = newRandomToken("st_", 18);
   savePending(
@@ -172,8 +207,6 @@ oauthRouter.get("/oauth/authorize", (req: Request, res: Response) => {
     PENDING_TTL_MS,
   );
 
-  // Render the team-token consent page. Form posts back to /oauth/consent
-  // with the internalState carried in a hidden field.
   res.type("html").send(consentPageHtml(internalState, client.client_name ?? "this app"));
 });
 

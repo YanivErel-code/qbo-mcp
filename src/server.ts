@@ -9,6 +9,7 @@ import { buildAuthUrl, exchangeCode } from "./intuit.js";
 import { authenticate, createUser, generateApiKey } from "./auth.js";
 import { getSharedRealmInfo, saveSharedConnection } from "./qbo.js";
 import { oauthRouter } from "./oauth/routes.js";
+import { cfAccessEnabled, identifyFromCfAccess } from "./oauth/cf_access.js";
 
 function buildMcpServer(): McpServer {
   const server = new McpServer({ name: "qbo-mcp", version: "0.3.0" });
@@ -132,13 +133,58 @@ app.get("/", (_req: Request, res: Response) => {
 
 // ---- /team-signup — coworker self-service for static keys ----
 
-app.get("/team-signup", (_req: Request, res: Response) => {
+function renderSignupResultHtml(plain: string, label: string | null, userId: number): string {
+  const cfgSnippet = JSON.stringify(
+    {
+      mcpServers: {
+        quickbooks: {
+          command: "npx",
+          args: [
+            "-y",
+            "mcp-remote",
+            `${config.publicBaseUrl}/mcp`,
+            "--header",
+            `Authorization:Bearer ${plain}`,
+          ],
+        },
+      },
+    },
+    null,
+    2,
+  );
+  return htmlPage(
+    "Your access key",
+    `<h1>You're in</h1>
+     <p>User <code>${userId}</code>${label ? ` (${label})` : ""} created.</p>
+     <div class="warn"><strong>Save this key now — it will not be shown again.</strong></div>
+     <pre><code>${plain}</code></pre>
+     <h3>Claude Desktop config (~/Library/Application Support/Claude/claude_desktop_config.json)</h3>
+     <pre><code>${cfgSnippet.replace(/</g, "&lt;")}</code></pre>
+     <h3>Claude Code CLI</h3>
+     <pre><code>claude mcp add --scope user --transport http quickbooks ${config.publicBaseUrl}/mcp \\
+  --header "Authorization: Bearer ${plain}"</code></pre>`,
+  );
+}
+
+app.get("/team-signup", async (req: Request, res: Response) => {
+  // Fast path: Cloudflare Access already authenticated this user — mint
+  // their key immediately, no token form.
+  if (cfAccessEnabled) {
+    const identity = await identifyFromCfAccess(req);
+    if (identity) {
+      const { plain, hash } = generateApiKey();
+      const user = createUser(hash, identity.email);
+      res.type("html").send(renderSignupResultHtml(plain, identity.email, user.id));
+      return;
+    }
+  }
+
   if (!config.teamSignupToken) {
     res.status(503).type("html").send(
       htmlPage(
         "Team signup disabled",
         `<h1>Team signup is disabled</h1>
-         <p>The server's <code>TEAM_SIGNUP_TOKEN</code> env var is empty. Ask the admin to set it.</p>`,
+         <p>The admin hasn't enabled either Cloudflare Access gating or a <code>TEAM_SIGNUP_TOKEN</code>.</p>`,
       ),
     );
     return;
@@ -180,40 +226,7 @@ app.post("/team-signup", (req: Request, res: Response) => {
   const label = body.label?.trim() || null;
   const { plain, hash } = generateApiKey();
   const user = createUser(hash, label);
-
-  const cfgSnippet = JSON.stringify(
-    {
-      mcpServers: {
-        quickbooks: {
-          command: "npx",
-          args: [
-            "-y",
-            "mcp-remote",
-            `${config.publicBaseUrl}/mcp`,
-            "--header",
-            `Authorization:Bearer ${plain}`,
-          ],
-        },
-      },
-    },
-    null,
-    2,
-  );
-
-  res.type("html").send(
-    htmlPage(
-      "Your access key",
-      `<h1>You're in</h1>
-       <p>User <code>${user.id}</code>${label ? ` (${label})` : ""} created.</p>
-       <div class="warn"><strong>Save this key now — it will not be shown again.</strong></div>
-       <pre><code>${plain}</code></pre>
-       <h3>Claude Desktop config (~/Library/Application Support/Claude/claude_desktop_config.json)</h3>
-       <pre><code>${cfgSnippet.replace(/</g, "&lt;")}</code></pre>
-       <h3>Claude Code CLI</h3>
-       <pre><code>claude mcp add --scope user --transport http quickbooks ${config.publicBaseUrl}/mcp \\
-  --header "Authorization: Bearer ${plain}"</code></pre>`,
-    ),
-  );
+  res.type("html").send(renderSignupResultHtml(plain, label, user.id));
 });
 
 // ---- /connect/quickbooks — admin-only Intuit OAuth bootstrap ----

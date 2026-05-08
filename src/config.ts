@@ -20,6 +20,14 @@ const schema = z.object({
   // which means anyone could become the QBO admin (then everyone else's
   // tokens at Intuit get revoked). Strongly recommend setting this.
   ADMIN_BOOTSTRAP_TOKEN: z.string().optional(),
+
+  // ---- Cloudflare Access (optional, recommended for zero-friction signup) ----
+  // When set, /oauth/authorize and /team-signup auto-pass for users whose
+  // requests carry a valid Cf-Access-Jwt-Assertion (i.e. they came through
+  // a Cloudflare Access policy that allowed them, e.g. emails @ditto.com).
+  // Falls back to the team-token form when these are unset.
+  CF_ACCESS_TEAM_DOMAIN: z.string().optional(), // e.g. "erel.cloudflareaccess.com"
+  CF_ACCESS_AUD: z.string().optional(),         // the per-application AUD tag
 });
 
 const parsed = schema.safeParse(process.env);
@@ -50,4 +58,8 @@ export const config = {
       : "https://sandbox-quickbooks.api.intuit.com",
   teamSignupToken: env.TEAM_SIGNUP_TOKEN ?? null,
   adminBootstrapToken: env.ADMIN_BOOTSTRAP_TOKEN ?? null,
+  cfAccess: {
+    teamDomain: env.CF_ACCESS_TEAM_DOMAIN ?? null,
+    aud: env.CF_ACCESS_AUD ?? null,
+  },
 };
