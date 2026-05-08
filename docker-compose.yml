@@ -1,0 +1,13 @@
+services:
+  qbo-mcp:
+    build: .
+    container_name: qbo-mcp
+    ports:
+      # Host port 3033 (3000 is taken on the NAS by another container).
+      # Cloudflare Tunnel routes qbo-mcp.erelcloud.com -> localhost:3033.
+      - "3033:3000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped
