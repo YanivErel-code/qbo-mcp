@@ -88,6 +88,13 @@ function page(title: string, body: string): string {
   .filter-panel { border: 1px solid #ccc; border-radius: 6px; padding: 8px 12px;
                   margin-top: 4px; min-width: 240px; background: #fafafa;
                   max-height: 280px; overflow-y: auto; }
+  .filter-details { display: inline-block; vertical-align: middle; }
+  .filter-summary { display: inline-block; font-size: 13px; cursor: pointer;
+                    padding: 4px 12px; border: 1px solid #ccc; border-radius: 4px;
+                    background: #f3f3f3; list-style: none; user-select: none; }
+  .filter-summary::-webkit-details-marker { display: none; }
+  .filter-summary:hover { background: #e7e7e7; border-color: #999; }
+  details[open] > .filter-summary { background: #e0e0e0; }
   @media (prefers-color-scheme: dark) {
     body { background: #1a1a1a; color: #ddd; }
     th { background: #222; } th, td { border-color: #333; }
@@ -95,6 +102,9 @@ function page(title: string, body: string): string {
     pre { background: #222; }
     h2 { border-color: #333; }
     .filter-panel { background: #222; border-color: #444; }
+    .filter-summary { background: #2a2a2a; border-color: #444; color: #ddd; }
+    .filter-summary:hover { background: #333; border-color: #555; }
+    details[open] > .filter-summary { background: #383838; }
   }
 </style></head><body>${body}</body></html>`;
 }
@@ -341,8 +351,8 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
   const labelDropdown = `
     <form method="GET" action="/admin" style="display:inline-block;margin-right:8px;vertical-align:middle">
       ${tokenInput}
-      <details ${labelValues.length > 0 ? "open" : ""} style="display:inline-block">
-        <summary class="muted" style="font-size:13px;cursor:pointer;display:inline">${summary}</summary>
+      <details ${labelValues.length > 0 ? "open" : ""} class="filter-details">
+        <summary class="filter-summary">${summary} ▾</summary>
         <div class="filter-panel">
           ${labelCheckboxes}
           <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
