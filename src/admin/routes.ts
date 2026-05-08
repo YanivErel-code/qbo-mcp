@@ -355,19 +355,24 @@ adminRouter.post("/admin/users/:id/revoke", async (req: Request, res: Response) 
   if (!ctx) return;
 
   const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0) {
+  if (!Number.isFinite(id) || id < 0) {
     res.status(400).type("html").send(page("Bad request", "<h1>Invalid user id</h1>"));
     return;
   }
-  if (id === 1) {
-    // user_id 1 is the legacy admin static-key user. Refuse to delete it
-    // through the UI (avoid foot-gun); admin can do it directly via SQL if
-    // they really want.
+  if (id === 0) {
+    // user_id 0 is the shared admin slot sentinel. The qbo_connections row
+    // FK-references it; deleting it breaks every team member's tool calls
+    // until /connect/quickbooks is re-run. Refuse via UI; admin can drop
+    // the connection directly via SQL if they really want.
     res.status(400).type("html").send(page(
       "Refused",
       `<h1>Refused</h1>
-       <p>user_id 1 is reserved as the legacy admin static-key user. If you
-          really want to remove it, do it directly via SQLite.</p>
+       <p>user_id 0 is the shared admin slot sentinel — the QBO upstream
+          connection depends on it. Removing this row would break tool
+          calls for every team member until you re-run
+          <code>/connect/quickbooks</code>.</p>
+       <p>If you really want to wipe the upstream connection, do it
+          directly via SQLite.</p>
        <p><a href="/admin${ctx.reason === "token" ? `?token=${req.query.token}` : ""}">Back</a></p>`,
     ));
     return;
