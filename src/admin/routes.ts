@@ -150,6 +150,13 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
       params.push(uid);
     }
   }
+  if (q.label) {
+    // Match against the denormalized user_label column so the filter
+    // survives user_id rotation (dedupe replaces api_key_hash but keeps
+    // the same row; historical rows with old user_ids stay attributable).
+    filters.push("user_label = ?");
+    params.push(q.label);
+  }
   if (q.since) {
     const m = /^(\d+)([mhd])$/.exec(q.since);
     if (m) {
@@ -258,8 +265,35 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     chip("Last 24h", "since=24h", q.since === "24h") +
     chip("Last 7d", "since=7d", q.since === "7d") +
     (q.user ? chip(`user=${q.user}`, `user=${q.user}`, true) : "") +
+    (q.label ? chip(`label=${escapeHtml(q.label)}`, `label=${encodeURIComponent(q.label)}`, true) : "") +
     (q.path ? chip(`path~${escapeHtml(q.path)}`, `path=${encodeURIComponent(q.path)}`, true) : "") +
     (q.tool ? chip(`tool=${escapeHtml(q.tool)}`, `tool=${encodeURIComponent(q.tool)}`, true) : "");
+
+  // Distinct labels ever seen in the log — broader than just current users
+  // (so revoked users' history is still selectable). Sorted with NULLs out.
+  const knownLabels = (db.prepare(
+    `SELECT DISTINCT user_label
+       FROM request_log
+      WHERE user_label IS NOT NULL
+      ORDER BY user_label`,
+  ).all() as Array<{ user_label: string }>).map((r) => r.user_label);
+
+  const tokenInput = tokenPart
+    ? `<input type="hidden" name="token" value="${escapeHtml(String(req.query.token))}">`
+    : "";
+  const labelDropdown = `
+    <form method="GET" action="/admin" style="display:inline-block;margin-right:8px;vertical-align:middle">
+      ${tokenInput}
+      <label class="muted" style="font-size:13px">filter by user:
+        <select name="label" onchange="this.form.submit()" style="font-size:13px;padding:3px 6px;margin-left:4px">
+          <option value="">— all —</option>
+          ${knownLabels.map((l) => {
+            const sel = q.label === l ? "selected" : "";
+            return `<option value="${escapeHtml(l)}" ${sel}>${escapeHtml(l)}</option>`;
+          }).join("")}
+        </select>
+      </label>
+    </form>`;
 
   res.type("html").send(page(
     "qbo-mcp admin",
@@ -291,14 +325,14 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
          ${filters.length ? ` (out of ${totalRequests} total)` : ""}
        </span>
      </h2>
-     <p>${filterBar}</p>
+     <p>${labelDropdown}${filterBar}</p>
      <table>
        <thead><tr><th>when</th><th>user</th><th>request</th><th>tool</th><th>status</th><th>dur</th><th>ip</th><th></th></tr></thead>
        <tbody>${logRows || `<tr><td colspan="8" class="muted">No requests match.</td></tr>`}</tbody>
      </table>
      <p class="muted" style="font-size:12px;margin-top:24px">
        Custom filters via query string: <code>?failures=1</code>, <code>?user=8</code>,
-       <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
+       <code>?label=name@ditto.com</code>, <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
        <code>?path=oauth</code>, <code>?tool=qbo_query</code>. Combine freely.
      </p>`,
   ));
