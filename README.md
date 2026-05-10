@@ -2,38 +2,55 @@
 
 A self-hostable, **read-only** QuickBooks Online server for the
 [Model Context Protocol](https://modelcontextprotocol.io/). Lets your
-team query QBO data from Claude (Desktop, Code, or claude.ai web)
-through a shared admin connection, with per-user audit and zero-friction
-team signup via Cloudflare Access.
+team query QBO data from any MCP-compatible AI client through a shared
+admin connection, with per-user audit, per-user tool authorization, and
+zero-friction team signup via Cloudflare Access.
 
 ```
-   ┌──────────────┐                ┌──────────────┐
-   │ claude.ai web│ ─────┐         │  Claude      │
-   └──────────────┘      │         │  Desktop     │
-                         │         └──────┬───────┘
-   ┌──────────────┐      │                │
-   │  Claude Code │ ─────┤  HTTP Bearer   │
-   └──────────────┘      │                │
-                         ▼                ▼
-                ┌────────────────────────────┐
-                │     qbo-mcp (Express)      │
-                │  • OAuth 2.1 + DCR         │
-                │  • Per-user Bearer auth    │
-                │  • /admin dashboard        │
-                │  • Per-request audit log   │
-                └────────────┬───────────────┘
-                             │ shared admin connection
-                             ▼
-                    QuickBooks Online API
+   ┌─────────────────┐                                ┌─────────────────┐
+   │  MCP Client A   │  (browser-based, OAuth flow)   │  MCP Client B   │
+   │  e.g. claude.ai │ ─────┐                         │  with mcp-remote│
+   └─────────────────┘      │                         └────────┬────────┘
+                            │  HTTP Bearer (JWT or qbo_…)      │
+   ┌─────────────────┐      │                                  │
+   │ MCP Client C    │ ─────┤                                  │
+   │ e.g. mcp-cli    │      │                                  │
+   └─────────────────┘      │                                  │
+                            ▼                                  ▼
+                ┌────────────────────────────────────────────────┐
+                │             qbo-mcp (Express)                  │
+                │  • OAuth 2.1 + Dynamic Client Registration     │
+                │  • Per-user Bearer auth                        │
+                │  • Per-user tool authorization                 │
+                │  • /admin dashboard                            │
+                │  • Per-request audit log                       │
+                └──────────────────┬─────────────────────────────┘
+                                   │ shared admin connection
+                                   ▼
+                          QuickBooks Online API
 ```
+
+## Compatible MCP clients
+
+Any client that speaks the MCP Streamable HTTP transport works. Tested
+with:
+
+- **Claude** — Desktop (via `mcp-remote`), Claude Code (`claude mcp add`), and claude.ai web (Custom Connectors via OAuth 2.1 + DCR)
+- **Cline** (VS Code extension), **Cursor**, **Goose**, and other MCP-aware tools — via static Bearer keys
+- **Custom clients** built with the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), [Python SDK](https://github.com/modelcontextprotocol/python-sdk), or any HTTP client that can speak the MCP protocol
+
+OAuth-aware clients (those that follow the MCP 2025-03-26+ auth spec)
+get a one-click connect flow with no pre-shared secret. Other clients
+use a static Bearer key minted from the `/team-signup` page.
 
 ## Features
 
-- **MCP-spec OAuth 2.1** — `claude.ai` web's "Add custom connector" works with just the URL. Implements RFC 9728 (resource metadata), RFC 8414 (AS metadata), RFC 7591 (Dynamic Client Registration), PKCE.
-- **Two auth paths**, same backend: static `qbo_…` keys for desktop clients, JWT Bearer tokens for OAuth-flow clients. Both gate `/mcp` identically.
-- **Cloudflare Access integration** — gate `/team-signup`, `/oauth/authorize`, `/admin`, and `/connect/quickbooks` at the edge with a `@yourdomain.com` allowlist. Once configured, signing up is one click for anyone in your domain.
+- **MCP-spec OAuth 2.1** — works with any OAuth-aware MCP client out of the box. Implements RFC 9728 (resource metadata), RFC 8414 (AS metadata), RFC 7591 (Dynamic Client Registration), and PKCE.
+- **Two auth paths**, same backend: static `qbo_…` keys for clients that need them, JWT Bearer tokens for OAuth-flow clients. Both gate `/mcp` identically.
+- **Per-user tool authorization** — admin can restrict each user to a subset of tools via `/admin` UI. Defaults to "all tools" so existing users are unaffected. `whoami` is always implicitly allowed.
+- **Cloudflare Access integration** — gate `/team-signup`, `/oauth/authorize`, `/admin`, and `/connect/quickbooks` at the edge with an email allowlist. Once configured, signing up is one click for anyone in your domain.
 - **Encryption at rest** — Intuit refresh tokens encrypted with AES-256-GCM in SQLite. Server-side master in `data/jwt-secret.bin`.
-- **Per-user audit** — every MCP request logged with user, tool name, JSON-RPC method, status, IP, duration. Admin dashboard at `/admin` with filtering by user / failures / time window.
+- **Per-user audit** — every MCP request logged with user, tool name, JSON-RPC method, status, IP, duration. Admin dashboard at `/admin` with rich filtering (failures only, time window, by-user, by-path, by-tool).
 - **Single Docker container, single SQLite file** — no external DB, no cache, no message queue.
 
 ## Tools (read-only)
@@ -47,7 +64,9 @@ team signup via Cloudflare Access.
 | `get_profit_and_loss` | P&L report for a date range |
 | `get_balance_sheet` | Balance sheet as of a date |
 
-Write tools (create invoice, record payment, etc.) are deliberately out of scope.
+Write tools (create invoice, record payment, etc.) are deliberately out
+of scope for now — see [Contributing](#contributing) if you want to add
+them with proper audit-trail and confirmation design.
 
 ## Architectural choice: shared admin connection
 
@@ -55,7 +74,7 @@ Intuit's OAuth model allows **only one admin connection per app per QBO realm at
 
 `qbo-mcp` works around this by holding **one shared upstream connection** at the QBO realm level. Every team member authenticates to *this* server with their own Bearer (static or OAuth-issued JWT), but all upstream API calls use the single admin's refresh token. From Intuit's audit log perspective every API call appears as the admin; from this server's audit log perspective each call is attributed to the calling user.
 
-Trade-offs documented in the [security model](#security-model) section.
+This means each MCP user effectively inherits the admin's QBO read scope. To enforce finer-grained access, use the per-user tool authorization (see [Per-user permissions](#per-user-permissions)). Trade-offs documented in the [security model](#security-model) section.
 
 ## Quick start (sandbox, ~5 min)
 
@@ -75,7 +94,6 @@ cd qbo-mcp
 cp .env.example .env
 # Fill in INTUIT_CLIENT_ID and INTUIT_CLIENT_SECRET.
 # Generate a strong ADMIN_BOOTSTRAP_TOKEN: `openssl rand -base64 32`
-# (TEAM_SIGNUP_TOKEN can be left empty in dev; not needed if you'll use CF Access in prod.)
 
 docker compose up --build -d
 docker compose logs -f
@@ -97,19 +115,26 @@ Sign in with Intuit, pick your sandbox company, click **Connect**. You should la
 http://localhost:3000/team-signup
 ```
 
-Enter the team token (or whatever you have set). The page returns a one-time `qbo_…` Bearer key.
+Enter the team token (set `TEAM_SIGNUP_TOKEN` in `.env`, or use Cloudflare Access in production). The page returns a one-time `qbo_…` Bearer key plus a copy-pasteable config snippet.
 
-### 5. Add to a Claude client
+### 5. Add to your MCP client
+
+The MCP endpoint is `http://localhost:3000/mcp` (or your public URL).
+Authentication is `Authorization: Bearer <key>`. Concrete examples:
+
+**OAuth-aware clients** (claude.ai web Custom Connectors, etc.) — just paste the URL. The client discovers the OAuth metadata, runs Dynamic Client Registration, and walks through the auth code flow automatically. No manual Bearer.
+
+**Static-Bearer clients** that speak Streamable HTTP directly — point them at the URL with the `Authorization` header. Examples:
 
 ```bash
+# Claude Code
 claude mcp add --scope user --transport http quickbooks \
   http://localhost:3000/mcp \
   --header "Authorization: Bearer qbo_…"
 ```
 
-Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
 ```json
+// Claude Desktop (~/Library/Application Support/Claude/claude_desktop_config.json)
 {
   "mcpServers": {
     "quickbooks": {
@@ -124,7 +149,10 @@ Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_conf
 }
 ```
 
-Restart Claude. Ask it *"run whoami"* — should return your sandbox company.
+For other clients, refer to that client's MCP server-config docs — the
+URL + Bearer header pattern is universal.
+
+Test with the `whoami` tool — should return your sandbox company info.
 
 ## Production deployment
 
@@ -132,11 +160,7 @@ The recommended pattern: run the container on any machine, expose it through **C
 
 ### 1. Switch Intuit to production
 
-Intuit production apps require **HTTPS** redirect URIs. Either:
-- Get production credentials (separate Client ID/Secret, requires going through Intuit's production readiness checklist), OR
-- Stay in sandbox and use a public HTTPS URL anyway
-
-Add your production redirect URI to the Intuit app: `https://your-mcp.example.com/connect/callback`.
+Intuit production apps require **HTTPS** redirect URIs. Either get production credentials (separate Client ID/Secret, requires Intuit's production readiness checklist), or stay in sandbox and use a public HTTPS URL anyway. Add your production redirect URI to the Intuit app: `https://your-mcp.example.com/connect/callback`.
 
 ### 2. Stand up Cloudflare Tunnel
 
@@ -152,15 +176,15 @@ In Zero Trust → **Access → Applications → Add an application** (Self-hoste
 
 - **Application domain:** `qbo-mcp.example.com`
 - **Add four destinations** (or one app per path), all sharing the same Cloudflare Access AUD:
-  - `oauth/authorize` — OAuth flow
-  - `team-signup` — coworker self-service
+  - `oauth/authorize` — OAuth flow (browser-based)
+  - `team-signup` — coworker self-service (browser-based)
   - `connect/quickbooks` — admin re-link (high-sensitivity)
   - `admin` — admin dashboard
 - **Identity providers:** any (Google OAuth, One-Time PIN, Okta, etc.)
 - **Policy:** Allow → "Emails in a list" → reference a [Cloudflare List](https://developers.cloudflare.com/cloudflare-one/policies/access/lists/) of approved emails
 
 Leave `/mcp`, `/health`, `/`, and `/.well-known/oauth-*` **unprotected** by Access:
-- `/mcp` is gated by Bearer auth (Claude Desktop's `mcp-remote` can't do browser SSO)
+- `/mcp` is gated by Bearer auth (most non-browser clients can't do interactive SSO)
 - `/.well-known/*` must be public per OAuth spec
 - `/health` is for monitoring
 
@@ -186,7 +210,7 @@ Visit `https://qbo-mcp.example.com/connect/quickbooks?token=<ADMIN_BOOTSTRAP_TOK
 
 ### 6. Coworkers self-onboard
 
-Send them: `https://qbo-mcp.example.com/team-signup`. Cloudflare emails them an OTP, they sign in, the success page shows a personal `qbo_…` key plus a copy-pasteable Claude Desktop config snippet.
+Send them: `https://qbo-mcp.example.com/team-signup`. Cloudflare emails them an OTP, they sign in, the success page shows a personal `qbo_…` key plus a copy-pasteable config snippet for whichever MCP client they use.
 
 ## Authentication model
 
@@ -198,7 +222,21 @@ Three independent auth contexts:
 | **Coworker signup** (`/team-signup`, `/oauth/authorize`) | Cloudflare Access OTP/SSO + email allowlist | Network edge (Cloudflare) |
 | **Admin** (`/admin`, `/connect/quickbooks`) | CF Access email-match OR `ADMIN_BOOTSTRAP_TOKEN` | Both: edge + server |
 
-`/mcp` returns 401 with a proper `WWW-Authenticate: Bearer resource_metadata="…"` challenge so OAuth-aware MCP clients (claude.ai web) can self-discover the server's OAuth endpoints and complete a Dynamic Client Registration + auth-code flow without any pre-shared secret.
+`/mcp` returns 401 with a proper `WWW-Authenticate: Bearer resource_metadata="…"` challenge so OAuth-aware MCP clients can self-discover the server's OAuth endpoints and complete a Dynamic Client Registration + auth-code flow without any pre-shared secret.
+
+## Per-user permissions
+
+Each user has an optional **tool whitelist**. NULL means no restriction (the historical default — every existing user starts here). When set, only tools in the list are callable for that user.
+
+`whoami` is always implicitly allowed regardless of the whitelist, so users can always self-diagnose their connection state.
+
+Manage permissions from `/admin` → click **edit** in the **permissions** column on any user row. The form has two modes:
+- **All tools (no restriction)** — clears the whitelist
+- **Restrict to specific tools** — checkboxes for each known tool
+
+Denied tool calls return a JSON-RPC error `-32000` with a clear message
+(`Permission denied: tool 'X' is not allowed for your account`). The
+denial is visible in the `/admin` activity log via the error column.
 
 ## Configuration reference
 
@@ -227,7 +265,7 @@ Visit `/admin` (gated by CF Access email match if `ADMIN_EMAIL` is set, or `?tok
 
 Shows:
 - **QBO connection status** with last-refresh timestamp
-- **Users table** — every active user with id, label (typically email), creation/last-seen, request count, **Revoke** button
+- **Users table** — every active user with id, label (typically email), creation/last-seen, request count, **permissions**, **edit perms** link, **Revoke** button
 - **Recent activity** — last 100 requests with chip filters (Failures only, Last 1h/24h/7d), multi-select user dropdown, and query-string filters (`?failures=1`, `?since=24h`, `?label=user@example.com`, `?path=oauth`, `?tool=qbo_query`)
 
 ## Security model
@@ -238,12 +276,14 @@ Shows:
 - **Intuit refresh tokens** (in `qbo_connections`) encrypted with AES-256-GCM. Encryption key derived from `data/jwt-secret.bin` via HKDF.
 - **OAuth access tokens** are short-lived JWTs signed with `data/jwt-secret.bin` (HS256, 1-hour expiry). Refresh tokens are opaque and single-use.
 - **Cloudflare Access** gates the four user-facing UI paths at the edge. JWTs verified against Cloudflare's published JWKS.
+- **Per-user tool authorization** restricts which MCP tools each user can call.
 
 **What's NOT protected:**
 
 - The `.env` file holds Intuit `client_secret` in plaintext on disk. Standard config-file precautions apply.
 - A full server compromise (root/file read) yields the JWT signing key, which would let an attacker forge OAuth JWTs and decrypt the SQLite-stored Intuit tokens. The encryption-at-rest defends only against partial leaks (e.g. a stolen SQLite copy without `.env`).
 - The QBO realm ID is leaked in OAuth redirect URLs (Intuit's behavior, not ours).
+- All MCP users inherit the admin's QBO read scope at the upstream API level. Use per-user tool authorization to limit damage radius.
 
 **Auditing:**
 
@@ -265,7 +305,7 @@ The project is TypeScript on Node 20+, Express 4 with `@modelcontextprotocol/sdk
 - `server.ts` — Express app + `/mcp` handler
 - `tools/*.ts` — MCP tool implementations
 - `qbo.ts` — QBO API client + token refresh + encryption-at-rest
-- `auth.ts` — Bearer parsing + user lookup + dedupe-by-email
+- `auth.ts` — Bearer parsing + user lookup + per-user permissions + dedupe-by-email
 - `oauth/` — OAuth 2.1 endpoints, JWT signing, CF Access verification
 - `admin/` — admin dashboard + per-request audit log middleware
 
@@ -275,10 +315,10 @@ Single SQLite file, schema in `src/db.ts`:
 
 | Table | Purpose |
 | --- | --- |
-| `users` | One row per Bearer holder (api_key_hash, label, created_at) |
+| `users` | One row per Bearer holder (api_key_hash, label, tool_whitelist, created_at) |
 | `qbo_connections` | The shared upstream Intuit refresh token (one row per realm; user_id=0 sentinel) |
 | `linking_sessions` | Short-lived CSRF state for `/connect/quickbooks` (15 min TTL) |
-| `oauth_clients` | Dynamically-registered MCP clients (claude.ai web etc.) |
+| `oauth_clients` | MCP clients registered via Dynamic Client Registration |
 | `oauth_pending` | In-flight `/oauth/authorize` requests (15 min TTL) |
 | `oauth_codes` | One-time auth codes (10 min TTL) |
 | `oauth_refresh_tokens` | Opaque, single-use refresh tokens for the `/oauth/token` endpoint |
@@ -291,7 +331,8 @@ To wipe all user state: `DELETE FROM users WHERE id != 0;` (preserves the shared
 PRs welcome. Useful directions:
 
 - **Write tools** (create invoice, record payment, etc.) — needs a confirmation/audit-trail design first.
-- **Multi-realm support** — the schema already keys connections by realm; just needs a UI to pick which realm a user is operating against.
+- **Per-user data scoping** — beyond tool whitelisting, filter row-level data per user (e.g. by QBO Class or Department).
+- **Multi-realm support** — let the same server back multiple QBO companies; the schema mostly supports it, just needs UI to pick which realm a user is operating against.
 - **Pruning the request log** — currently grows unbounded. ~150 rows/day is fine for years; eventually a cron-like cleanup would be nice.
 - **Replacing the user_id=0 sentinel** with a proper `realms` table to drop the FK foot-gun.
 
