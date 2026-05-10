@@ -92,8 +92,8 @@ function page(title: string, body: string): string {
          margin: 32px auto; padding: 0 16px; line-height: 1.5; }
   h1 { margin-top: 0; }
   h2 { margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee;
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #eee;
            vertical-align: top; }
   th { background: #f7f7f7; font-weight: 600; }
   tr:hover td { background: #fafafa; }
@@ -140,7 +140,10 @@ function page(title: string, body: string): string {
 function fmtTs(ms: number): string {
   if (!ms) return "—";
   const d = new Date(ms);
-  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  // Compact "YYYY-MM-DD HH:MM" — no seconds, no UTC suffix. Both columns
+  // and tooltips use this; UTC is implicit (server is UTC) and seconds
+  // are rarely useful at the audit-log level.
+  return d.toISOString().replace("T", " ").slice(0, 16);
 }
 
 function fmtRelative(ms: number): string {
@@ -270,8 +273,10 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
   const userRows = users.map((u) => {
     const label = u.label ? escapeHtml(u.label) : '<span class="muted">—</span>';
+    // Relative time as the primary signal; full timestamp on hover. Cuts
+    // the column width by ~25 characters per row.
     const lastSeen = u.last_seen
-      ? `${fmtRelative(u.last_seen)} <span class="muted">(${fmtTs(u.last_seen)})</span>`
+      ? `<span title="${fmtTs(u.last_seen)} UTC">${fmtRelative(u.last_seen)}</span>`
       : '<span class="muted">never</span>';
 
     // Permissions summary cell: parse tool_whitelist (or null = all tools)
