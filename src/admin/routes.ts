@@ -234,6 +234,11 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     filters.push("tool_name = ?");
     params.push(q.tool);
   }
+  // ?tool_calls=1 — show only real tool invocations, hiding MCP protocol
+  // noise (tools/list, initialize, notifications/*).
+  if (q.tool_calls === "1") {
+    filters.push("tool_name IS NOT NULL");
+  }
 
   const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const recent = db.prepare(
@@ -336,14 +341,18 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     const kindCell = r.auth_kind
       ? `<span class="pill ${r.auth_kind}">${r.auth_kind}</span>`
       : "";
-    // Tool name when it's a tools/call; fall back to the JSON-RPC method
-    // for protocol noise (initialize, tools/list, ping, notifications/*).
-    // Visually distinguish so real tool invocations stand out.
-    const tool = r.tool_name
-      ? `<code>${escapeHtml(r.tool_name)}</code>`
-      : r.rpc_method
-        ? `<span class="muted" style="font-style:italic" title="JSON-RPC method (not a tool call)">${escapeHtml(r.rpc_method)}</span>`
-        : "";
+    // The tool column shows ONLY the real tool name (e.g. qbo_query,
+    // list_customers). MCP protocol traffic that isn't a tool call —
+    // tools/list, initialize, notifications/*, ping — is rendered as a
+    // muted annotation on the request column instead, so the tool
+    // column stays scannable for actual usage.
+    const tool = r.tool_name ? `<code>${escapeHtml(r.tool_name)}</code>` : "";
+    // Append the JSON-RPC method to the request path when it's protocol
+    // noise (no tool_name). Keeps the info available for forensics
+    // without polluting the tool column.
+    const rpcSuffix = !r.tool_name && r.rpc_method
+      ? ` <span class="muted" style="font-size:12px">· ${escapeHtml(r.rpc_method)}</span>`
+      : "";
     const errCell = r.error
       ? `<details><summary class="muted">err</summary><pre>${escapeHtml(r.error)}</pre></details>`
       : "";
@@ -354,7 +363,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
       <tr>
         <td class="nowrap">${fmtRelative(r.ts)}</td>
         <td>${userCell} ${kindCell}</td>
-        <td class="mono">${r.method} ${escapeHtml(r.path)}</td>
+        <td class="mono">${r.method} ${escapeHtml(r.path)}${rpcSuffix}</td>
         <td>${tool}</td>
         <td><span class="pill ${statusClass}">${r.status}</span></td>
         <td class="nowrap">${r.duration_ms ?? "—"} ms</td>
@@ -372,6 +381,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
   const noFilters = filters.length === 0;
   const filterBar =
     chip("All", "", noFilters) +
+    chip("Tool calls only", "tool_calls=1", q.tool_calls === "1") +
     chip("Failures", "failures=1", q.failures === "1") +
     chip("Last 1h", "since=1h", q.since === "1h") +
     chip("Last 24h", "since=24h", q.since === "24h") +
@@ -473,8 +483,10 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
        <tbody>${logRows || `<tr><td colspan="8" class="muted">No requests match.</td></tr>`}</tbody>
      </table>
      <p class="muted" style="font-size:12px;margin-top:24px">
-       Custom filters via query string: <code>?failures=1</code>, <code>?user=8</code>,
-       <code>?label=name@example.com</code>, <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
+       Custom filters via query string: <code>?failures=1</code>,
+       <code>?tool_calls=1</code> (real tool invocations only),
+       <code>?user=8</code>, <code>?label=name@example.com</code>,
+       <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
        <code>?path=oauth</code>, <code>?tool=qbo_query</code>. Combine freely.
      </p>`,
   ));

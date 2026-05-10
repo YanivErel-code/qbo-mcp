@@ -33,6 +33,112 @@ describe("admin — gate", () => {
   });
 });
 
+describe("admin — recent activity rendering", () => {
+  function insertLogRow(args: {
+    user_id: number | null;
+    user_label: string | null;
+    method: string;
+    path: string;
+    tool_name: string | null;
+    rpc_method: string | null;
+    status: number;
+  }) {
+    db.prepare(
+      `INSERT INTO request_log
+         (ts, user_id, user_label, auth_kind, method, path, tool_name, rpc_method,
+          status, duration_ms, remote_ip, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      Date.now(),
+      args.user_id,
+      args.user_label,
+      args.user_id ? "static" : null,
+      args.method,
+      args.path,
+      args.tool_name,
+      args.rpc_method,
+      args.status,
+      5,
+      null,
+      null,
+    );
+  }
+
+  it("shows the real tool name in the tool column for tools/call rows", async () => {
+    insertLogRow({
+      user_id: null,
+      user_label: null,
+      method: "POST",
+      path: "/mcp",
+      tool_name: "qbo_query",
+      rpc_method: "tools/call",
+      status: 200,
+    });
+    const res = await request(app).get("/admin?token=test_admin_token");
+    // The tool column should contain a <code>qbo_query</code> for this row.
+    expect(res.text).toMatch(/<code>qbo_query<\/code>/);
+  });
+
+  it("does NOT render rpc_method (e.g. tools/list) inside the tool column", async () => {
+    insertLogRow({
+      user_id: null,
+      user_label: null,
+      method: "POST",
+      path: "/mcp",
+      tool_name: null,
+      rpc_method: "tools/list",
+      status: 200,
+    });
+    const res = await request(app).get("/admin?token=test_admin_token");
+    // The previous rendering put `tools/list` inside <code>…</code>. The new
+    // one places it as a muted suffix on the request column (see next test),
+    // never as a <code> in the tool column.
+    expect(res.text).not.toMatch(/<code>tools\/list<\/code>/);
+  });
+
+  it("shows rpc_method as a muted suffix on the request column when there's no tool name", async () => {
+    insertLogRow({
+      user_id: null,
+      user_label: null,
+      method: "POST",
+      path: "/mcp",
+      tool_name: null,
+      rpc_method: "initialize",
+      status: 200,
+    });
+    const res = await request(app).get("/admin?token=test_admin_token");
+    expect(res.text).toMatch(/· initialize/);
+  });
+
+  it("?tool_calls=1 hides protocol noise rows (no tool_name)", async () => {
+    insertLogRow({
+      user_id: null,
+      user_label: null,
+      method: "POST",
+      path: "/mcp",
+      tool_name: null,
+      rpc_method: "tools/list",
+      status: 200,
+    });
+    insertLogRow({
+      user_id: null,
+      user_label: null,
+      method: "POST",
+      path: "/mcp",
+      tool_name: "list_customers",
+      rpc_method: "tools/call",
+      status: 200,
+    });
+    const res = await request(app).get(
+      "/admin?token=test_admin_token&tool_calls=1",
+    );
+    // The tools/list row's "· tools/list" suffix should NOT appear because
+    // the row was filtered out. The list_customers row should be visible.
+    expect(res.text).not.toMatch(/· tools\/list/);
+    expect(res.text).toMatch(/<code>list_customers<\/code>/);
+  });
+});
+
 describe("admin — users table", () => {
   it("shows the active users with permissions column", async () => {
     const a = generateApiKey();
