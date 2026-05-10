@@ -11,10 +11,13 @@ jobs:
     name: Typecheck + tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # Project runtime is Node 20 (Docker base image: node:20-slim);
+          # tests use the same version. The action itself runs on the
+          # runner's bundled Node 24 — that's controlled by the @v5 tag.
           node-version: "20"
           cache: npm
 
@@ -28,7 +31,7 @@ jobs:
 
       - name: Upload coverage HTML
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-html
           path: coverage/
