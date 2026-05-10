@@ -129,3 +129,13 @@ try {
   // Already exists — better-sqlite3 throws "duplicate column name". Ignore.
   if (!String((e as Error).message).includes("duplicate column")) throw e;
 }
+
+// Idempotent column add for users.tool_whitelist. NULL means "no restriction"
+// (default, current behavior). When set, it's a JSON array of tool names the
+// user is allowed to call. `whoami` is always implicitly allowed so users can
+// always self-diagnose their connection state.
+try {
+  db.exec("ALTER TABLE users ADD COLUMN tool_whitelist TEXT");
+} catch (e) {
+  if (!String((e as Error).message).includes("duplicate column")) throw e;
+}

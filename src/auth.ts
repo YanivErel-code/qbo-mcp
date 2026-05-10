@@ -7,6 +7,12 @@ const API_KEY_PREFIX = "qbo_";
 export type User = {
   id: number;
   label: string | null;
+  /**
+   * Per-user MCP tool authorization. NULL = no restriction (all tools).
+   * String[] = only these tool names are callable. `whoami` is always
+   * implicitly allowed regardless of this list.
+   */
+  toolWhitelist: string[] | null;
 };
 
 export type AuthedUser = {
@@ -25,35 +31,73 @@ export function hashApiKey(plain: string): string {
   return createHash("sha256").update(plain).digest("hex");
 }
 
+type UserRow = {
+  id: number;
+  label: string | null;
+  tool_whitelist: string | null;
+};
+
+function rowToUser(row: UserRow): User {
+  let toolWhitelist: string[] | null = null;
+  if (row.tool_whitelist) {
+    try {
+      const parsed = JSON.parse(row.tool_whitelist);
+      if (Array.isArray(parsed)) toolWhitelist = parsed.filter((s) => typeof s === "string");
+    } catch {
+      // Malformed JSON — treat as unrestricted; admin should re-set it.
+    }
+  }
+  return { id: row.id, label: row.label, toolWhitelist };
+}
+
 export function createUser(apiKeyHash: string, label: string | null = null): User {
   const now = Date.now();
   const info = db
     .prepare("INSERT INTO users (api_key_hash, label, created_at) VALUES (?, ?, ?)")
     .run(apiKeyHash, label, now);
-  return { id: Number(info.lastInsertRowid), label };
+  return { id: Number(info.lastInsertRowid), label, toolWhitelist: null };
 }
 
 export function findUserByApiKey(plain: string | undefined): User | null {
   if (!plain) return null;
   const hash = hashApiKey(plain);
   const row = db
-    .prepare("SELECT id, label FROM users WHERE api_key_hash = ?")
-    .get(hash) as { id: number; label: string | null } | undefined;
-  return row ?? null;
+    .prepare("SELECT id, label, tool_whitelist FROM users WHERE api_key_hash = ?")
+    .get(hash) as UserRow | undefined;
+  return row ? rowToUser(row) : null;
 }
 
 export function findUserById(id: number): User | null {
   const row = db
-    .prepare("SELECT id, label FROM users WHERE id = ?")
-    .get(id) as { id: number; label: string | null } | undefined;
-  return row ?? null;
+    .prepare("SELECT id, label, tool_whitelist FROM users WHERE id = ?")
+    .get(id) as UserRow | undefined;
+  return row ? rowToUser(row) : null;
 }
 
 export function findUserByLabel(label: string): User | null {
   const row = db
-    .prepare("SELECT id, label FROM users WHERE label = ? LIMIT 1")
-    .get(label) as { id: number; label: string | null } | undefined;
-  return row ?? null;
+    .prepare("SELECT id, label, tool_whitelist FROM users WHERE label = ? LIMIT 1")
+    .get(label) as UserRow | undefined;
+  return row ? rowToUser(row) : null;
+}
+
+/**
+ * Decide whether `user` may call the MCP tool named `toolName`. `whoami` is
+ * always allowed (so a user can always check their own connection state and
+ * permissions). A NULL `toolWhitelist` means "no restriction" — the historical
+ * default. Any explicit array, even empty, gates tool calls.
+ */
+export function isToolAllowed(user: User, toolName: string): boolean {
+  if (toolName === "whoami") return true;
+  if (user.toolWhitelist === null) return true;
+  return user.toolWhitelist.includes(toolName);
+}
+
+export function setUserToolWhitelist(userId: number, whitelist: string[] | null): void {
+  db.prepare("UPDATE users SET tool_whitelist = ? WHERE id = ?").run(
+    whitelist === null ? null : JSON.stringify(whitelist),
+    userId,
+  );
 }
 
 /**
@@ -94,7 +138,7 @@ export async function authenticate(
     try {
       const verified = await verifyAccessToken(presented);
       const user = findUserById(verified.userId);
-      if (user) return { user, kind: "oauth" };
+      if (user) return { user, kind: "oauth" as const };
     } catch {
       // not a valid JWT — fall through to static key
     }

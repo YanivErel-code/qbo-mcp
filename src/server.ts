@@ -6,7 +6,7 @@ import { config } from "./config.js";
 import { db } from "./db.js";
 import { registerAllTools } from "./tools/index.js";
 import { buildAuthUrl, exchangeCode } from "./intuit.js";
-import { authenticate, createUser, generateApiKey, upsertUserByLabel } from "./auth.js";
+import { authenticate, createUser, generateApiKey, isToolAllowed, upsertUserByLabel, type AuthedUser } from "./auth.js";
 import { getSharedRealmInfo, saveSharedConnection } from "./qbo.js";
 import { oauthRouter } from "./oauth/routes.js";
 import { cfAccessEnabled, identifyFromCfAccess } from "./oauth/cf_access.js";
@@ -78,6 +78,23 @@ app.post("/mcp", requireAuth, async (req: Request, res: Response) => {
     res.locals.rpcMethod = first.method;
     if (first.method === "tools/call" && typeof first.params?.name === "string") {
       res.locals.toolName = first.params.name;
+
+      // Tool-level authorization. Reject denied tools with a JSON-RPC
+      // error before the SDK runs the handler. The audit log captures
+      // the attempt via res.locals.errorNote.
+      const auth = (req as any).authedUser as AuthedUser | undefined;
+      if (auth && !isToolAllowed(auth.user, first.params.name)) {
+        res.locals.errorNote = `tool denied: ${first.params.name}`;
+        res.status(200).json({
+          jsonrpc: "2.0",
+          id: first.id ?? null,
+          error: {
+            code: -32000,
+            message: `Permission denied: tool '${first.params.name}' is not allowed for your account. Contact your admin.`,
+          },
+        });
+        return;
+      }
     }
   }
 

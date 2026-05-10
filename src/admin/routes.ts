@@ -3,7 +3,8 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { identifyFromCfAccess } from "../oauth/cf_access.js";
 import { getSharedRealmInfo } from "../qbo.js";
-import { findUserByLabel } from "../auth.js";
+import { findUserById, findUserByLabel, setUserToolWhitelist } from "../auth.js";
+import { ALL_TOOL_NAMES } from "../tools/index.js";
 
 export const adminRouter = Router();
 
@@ -143,7 +144,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
   const users = db.prepare(
     `SELECT
-       u.id, u.label, u.created_at,
+       u.id, u.label, u.created_at, u.tool_whitelist,
        (SELECT MAX(ts) FROM request_log WHERE user_id = u.id) AS last_seen,
        (SELECT COUNT(*) FROM request_log WHERE user_id = u.id) AS request_count
      FROM users u
@@ -153,6 +154,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     id: number;
     label: string | null;
     created_at: number;
+    tool_whitelist: string | null;
     last_seen: number | null;
     request_count: number;
   }>;
@@ -238,6 +240,24 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     const lastSeen = u.last_seen
       ? `${fmtRelative(u.last_seen)} <span class="muted">(${fmtTs(u.last_seen)})</span>`
       : '<span class="muted">never</span>';
+
+    // Permissions summary cell: parse tool_whitelist (or null = all tools)
+    let permsCell: string;
+    if (u.tool_whitelist === null) {
+      permsCell = '<span class="muted">All tools</span>';
+    } else {
+      try {
+        const arr = JSON.parse(u.tool_whitelist) as unknown;
+        if (!Array.isArray(arr)) throw new Error("not an array");
+        const n = arr.length;
+        permsCell = n === 0
+          ? '<span class="pill err">Locked out</span>'
+          : `<span title="${arr.map((s) => escapeHtml(String(s))).join(", ")}">${n} tool${n === 1 ? "" : "s"}</span>`;
+      } catch {
+        permsCell = '<span class="pill err">malformed</span>';
+      }
+    }
+
     return `
       <tr>
         <td class="mono">${u.id}</td>
@@ -245,6 +265,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
         <td class="nowrap">${fmtTs(u.created_at)}</td>
         <td class="nowrap">${lastSeen}</td>
         <td>${u.request_count}</td>
+        <td>${permsCell} <a href="/admin/users/${u.id}/permissions${tokenPart}" style="font-size:12px;margin-left:6px">edit</a></td>
         <td>
           <form method="POST" action="/admin/users/${u.id}/revoke${tokenPart}" class="inline"
                 onsubmit="return confirm('Revoke user ${u.id}${u.label ? ` (${u.label})` : ""}? Their key stops working immediately.');">
@@ -383,8 +404,8 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
      <h2>Users <span class="muted" style="font-size:14px;font-weight:normal">${users.length} total</span></h2>
      <table>
-       <thead><tr><th>id</th><th>label</th><th>created</th><th>last seen</th><th># reqs</th><th></th></tr></thead>
-       <tbody>${userRows || `<tr><td colspan="6" class="muted">No users yet.</td></tr>`}</tbody>
+       <thead><tr><th>id</th><th>label</th><th>created</th><th>last seen</th><th># reqs</th><th>permissions</th><th></th></tr></thead>
+       <tbody>${userRows || `<tr><td colspan="7" class="muted">No users yet.</td></tr>`}</tbody>
      </table>
 
      <h2>Recent activity
@@ -404,6 +425,99 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
        <code>?path=oauth</code>, <code>?tool=qbo_query</code>. Combine freely.
      </p>`,
   ));
+});
+
+// ---- Per-user tool permissions ----
+
+adminRouter.get("/admin/users/:id/permissions", async (req: Request, res: Response) => {
+  const ctx = await requireAdmin(req, res);
+  if (!ctx) return;
+  const id = Number(req.params.id);
+  const user = Number.isFinite(id) ? findUserById(id) : null;
+  if (!user || id <= 0) {
+    res.status(404).type("html").send(page("Not found", "<h1>User not found</h1>"));
+    return;
+  }
+  const tokenPart = ctx.reason === "token" ? `?token=${req.query.token}` : "";
+  const tokenInput = ctx.reason === "token"
+    ? `<input type="hidden" name="token" value="${escapeHtml(String(req.query.token))}">`
+    : "";
+
+  const unrestricted = user.toolWhitelist === null;
+  const allowedSet = new Set(user.toolWhitelist ?? []);
+
+  const checkboxes = ALL_TOOL_NAMES.map((name) => {
+    const checked = unrestricted || allowedSet.has(name) || name === "whoami";
+    const disabled = name === "whoami" ? "disabled" : "";
+    const note = name === "whoami" ? ' <span class="muted">(always allowed)</span>' : "";
+    return `
+      <label style="display:block;font-weight:normal;font-size:14px;margin:6px 0">
+        <input type="checkbox" name="tool" value="${escapeHtml(name)}" ${checked ? "checked" : ""} ${disabled}>
+        <code>${escapeHtml(name)}</code>${note}
+      </label>`;
+  }).join("");
+
+  res.type("html").send(page(
+    "Permissions",
+    `<h1>Permissions for user ${user.id}${user.label ? ` (${escapeHtml(user.label)})` : ""}</h1>
+     <p><a href="/admin${tokenPart}">← Back to dashboard</a></p>
+
+     <form method="POST" action="/admin/users/${user.id}/permissions${tokenPart}">
+       ${tokenInput}
+       <fieldset style="border:1px solid #ccc;border-radius:6px;padding:14px 18px;margin-top:12px">
+         <legend>Mode</legend>
+         <label style="display:block;font-weight:normal;margin:4px 0">
+           <input type="radio" name="mode" value="all" ${unrestricted ? "checked" : ""}>
+           <strong>All tools</strong> <span class="muted">— no restriction (default)</span>
+         </label>
+         <label style="display:block;font-weight:normal;margin:4px 0">
+           <input type="radio" name="mode" value="restricted" ${unrestricted ? "" : "checked"}>
+           <strong>Restrict to specific tools</strong> <span class="muted">— pick below</span>
+         </label>
+       </fieldset>
+
+       <fieldset style="border:1px solid #ccc;border-radius:6px;padding:14px 18px;margin-top:12px">
+         <legend>Allowed tools (when restricted)</legend>
+         ${checkboxes}
+       </fieldset>
+
+       <p style="margin-top:18px;display:flex;gap:10px;align-items:center">
+         <button type="submit" style="background:#2ca01c;color:white;border:0;padding:8px 18px;border-radius:6px;font-size:14px;cursor:pointer">Save</button>
+         <a href="/admin${tokenPart}">Cancel</a>
+       </p>
+       <p class="muted" style="font-size:12px;margin-top:24px">
+         <code>whoami</code> is always implicitly allowed so users can always
+         self-diagnose their connection. <code>qbo_query</code> is the most
+         powerful tool — grants ad-hoc read access to all QBO entities.
+       </p>
+     </form>`,
+  ));
+});
+
+adminRouter.post("/admin/users/:id/permissions", async (req: Request, res: Response) => {
+  const ctx = await requireAdmin(req, res);
+  if (!ctx) return;
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).type("html").send(page("Bad request", "<h1>Invalid user id</h1>"));
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, string | string[]>;
+  const mode = typeof body.mode === "string" ? body.mode : "all";
+
+  if (mode === "all") {
+    setUserToolWhitelist(id, null);
+  } else {
+    // Form submits multiple `tool` checkboxes. Coerce to array; validate
+    // against the canonical tool list to refuse unknown names.
+    const raw = body.tool;
+    const submitted = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const allowed = (ALL_TOOL_NAMES as readonly string[]).filter((t) => submitted.includes(t));
+    setUserToolWhitelist(id, allowed);
+  }
+
+  const tokenPart = ctx.reason === "token" ? `?token=${req.query.token}` : "";
+  res.redirect(`/admin${tokenPart}`);
 });
 
 // ---- Revoke user ----
