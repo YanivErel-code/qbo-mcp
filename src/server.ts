@@ -132,7 +132,7 @@ function htmlPage(title: string, body: string): string {
 app.get("/", (_req: Request, res: Response) => {
   const realm = getSharedRealmInfo();
   const realmStatus = realm
-    ? `Connected to QBO realm <code>${realm.realmId}</code>`
+    ? `<strong>QBO admin connection active.</strong>`
     : `<strong>No QBO admin connection bootstrapped yet.</strong>`;
   res.type("html").send(
     htmlPage(
@@ -353,7 +353,7 @@ app.get("/connect/callback", async (req: Request, res: Response) => {
       htmlPage(
         "QBO admin connection established",
         `<h1>QBO admin connection established</h1>
-         <p>Realm <code>${realmId}</code> is now the shared upstream for all team users.</p>
+         <p>This QuickBooks company is now the shared upstream for all team users.</p>
          <p>Anyone who minted a key at <a href="/team-signup">/team-signup</a> can now query QBO via Claude.</p>`,
       ),
     );

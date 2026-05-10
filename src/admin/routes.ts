@@ -375,7 +375,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
      <h2>QuickBooks connection</h2>
      ${realm
-       ? `<p>Connected to realm <code>${realm.realmId}</code> · last refreshed
+       ? `<p>Connected to QuickBooks · last refreshed
           <strong>${fmtRelative(realm.updatedAt)}</strong> (${fmtTs(realm.updatedAt)}).</p>
           <p><a href="/connect/quickbooks${tokenPart}">Re-link QBO admin</a></p>`
        : `<p><strong>No connection bootstrapped yet.</strong>
