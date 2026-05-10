@@ -96,7 +96,7 @@ describe("admin — recent activity rendering", () => {
     expect(res.text).not.toMatch(/<code>tools\/list<\/code>/);
   });
 
-  it("shows rpc_method as a muted suffix on the request column when there's no tool name", async () => {
+  it("hides rpc_method from visible row text but keeps it in a tooltip on the path cell", async () => {
     insertLogRow({
       user_id: null,
       user_label: null,
@@ -107,7 +107,25 @@ describe("admin — recent activity rendering", () => {
       status: 200,
     });
     const res = await request(app).get("/admin?token=test_admin_token");
-    expect(res.text).toMatch(/· initialize/);
+    // No "· initialize" suffix or any visible tools/list / initialize text
+    // bleeding into the request column.
+    expect(res.text).not.toMatch(/· initialize/);
+    // But the rpc_method must be reachable via tooltip for forensics.
+    expect(res.text).toMatch(/title="JSON-RPC: initialize"/);
+  });
+
+  it("dims rows that aren't real tool calls so the eye lands on the tool calls", async () => {
+    insertLogRow({
+      user_id: null,
+      user_label: null,
+      method: "POST",
+      path: "/mcp",
+      tool_name: null,
+      rpc_method: "tools/list",
+      status: 200,
+    });
+    const res = await request(app).get("/admin?token=test_admin_token");
+    expect(res.text).toMatch(/<tr style="opacity:0\.55">/);
   });
 
   it("?tool_calls=1 hides protocol noise rows (no tool_name)", async () => {
@@ -132,9 +150,9 @@ describe("admin — recent activity rendering", () => {
     const res = await request(app).get(
       "/admin?token=test_admin_token&tool_calls=1",
     );
-    // The tools/list row's "· tools/list" suffix should NOT appear because
-    // the row was filtered out. The list_customers row should be visible.
-    expect(res.text).not.toMatch(/· tools\/list/);
+    // The tools/list row should be filtered out — no tooltip for it.
+    expect(res.text).not.toMatch(/title="JSON-RPC: tools\/list"/);
+    // The list_customers row should be visible.
     expect(res.text).toMatch(/<code>list_customers<\/code>/);
   });
 });

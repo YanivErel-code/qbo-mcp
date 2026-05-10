@@ -343,15 +343,18 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
       : "";
     // The tool column shows ONLY the real tool name (e.g. qbo_query,
     // list_customers). MCP protocol traffic that isn't a tool call —
-    // tools/list, initialize, notifications/*, ping — is rendered as a
-    // muted annotation on the request column instead, so the tool
-    // column stays scannable for actual usage.
+    // tools/list, initialize, notifications/*, ping — is hidden from
+    // the visible row but kept as a tooltip on the request column for
+    // forensics. Use the "Tool calls only" filter to hide those rows
+    // entirely.
     const tool = r.tool_name ? `<code>${escapeHtml(r.tool_name)}</code>` : "";
-    // Append the JSON-RPC method to the request path when it's protocol
-    // noise (no tool_name). Keeps the info available for forensics
-    // without polluting the tool column.
-    const rpcSuffix = !r.tool_name && r.rpc_method
-      ? ` <span class="muted" style="font-size:12px">· ${escapeHtml(r.rpc_method)}</span>`
+    const pathTitle = !r.tool_name && r.rpc_method
+      ? ` title="JSON-RPC: ${escapeHtml(r.rpc_method)}"`
+      : "";
+    // Visually demote protocol-noise rows (no tool_name) so real tool
+    // calls stand out when the filter isn't applied.
+    const rowStyle = !r.tool_name && r.rpc_method
+      ? ' style="opacity:0.55"'
       : "";
     const errCell = r.error
       ? `<details><summary class="muted">err</summary><pre>${escapeHtml(r.error)}</pre></details>`
@@ -360,10 +363,10 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
       ? `<code class="muted" title="${escapeHtml(r.remote_ip)}">${escapeHtml(r.remote_ip.length > 16 ? r.remote_ip.slice(0, 13) + "…" : r.remote_ip)}</code>`
       : "";
     return `
-      <tr>
+      <tr${rowStyle}>
         <td class="nowrap">${fmtRelative(r.ts)}</td>
         <td>${userCell} ${kindCell}</td>
-        <td class="mono">${r.method} ${escapeHtml(r.path)}${rpcSuffix}</td>
+        <td class="mono"${pathTitle}>${r.method} ${escapeHtml(r.path)}</td>
         <td>${tool}</td>
         <td><span class="pill ${statusClass}">${r.status}</span></td>
         <td class="nowrap">${r.duration_ms ?? "—"} ms</td>
