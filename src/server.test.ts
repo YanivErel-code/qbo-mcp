@@ -57,7 +57,7 @@ describe("server — /mcp tool authorization", () => {
   // before the SDK runs. A denied tool returns a JSON-RPC error -32000
   // synchronously without touching the SDK.
 
-  function makeAuthedRequest(plain: string, body: unknown) {
+  function makeAuthedRequest(plain: string, body: Record<string, unknown>) {
     return request(app)
       .post("/mcp")
       .set("Authorization", `Bearer ${plain}`)
