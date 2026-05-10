@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+# Forces JavaScript-based actions onto the runner's Node 24 even when their
+# bundled runtime still says Node 20 (e.g. actions/upload-artifact@v5 at the
+# moment). Removes the "Node.js 20 actions are deprecated" warning that
+# GitHub started emitting in May 2026.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     name: Typecheck + tests
