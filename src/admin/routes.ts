@@ -64,12 +64,19 @@ async function requireAdmin(req: Request, res: Response): Promise<AdminContext |
     );
     return null;
   }
-  // Attribute admin actions to a real user_id when the email matches one
-  // (CF Access path). This makes /admin browsing show up in the audit log
-  // under the admin's email instead of as anonymous "—".
+  // Attribute admin actions to a real user_id so /admin browsing shows up
+  // in the audit log under a name instead of anonymous "—".
+  //   - cf_access reason: email is the verified CF Access claim; lookup by label.
+  //   - token reason:     no email; attribute to the env-var primary admin
+  //                       (ADMIN_EMAIL) if their users row exists. Token-auth
+  //                       semantically *is* the primary admin, so this is
+  //                       the correct attribution.
   if (ctx.email) {
     const user = findUserByLabel(ctx.email);
     if (user) (req as any).authedUser = { user, kind: "oauth" };
+  } else if (ctx.reason === "token" && config.adminEmail) {
+    const user = findUserByLabel(config.adminEmail);
+    if (user) (req as any).authedUser = { user, kind: "static" };
   }
   return ctx;
 }

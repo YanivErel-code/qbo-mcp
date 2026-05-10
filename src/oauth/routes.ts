@@ -1,7 +1,7 @@
 import { type Request, type Response, Router } from "express";
 import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
-import { createUser, generateApiKey, upsertUserByLabel } from "../auth.js";
+import { createUser, findUserById, generateApiKey, upsertUserByLabel } from "../auth.js";
 import { signAccessToken } from "./jwt.js";
 import { cfAccessEnabled, identifyFromCfAccess } from "./cf_access.js";
 import {
@@ -169,6 +169,9 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
       // gets one stable user_id, not a new row each time.
       const { hash } = generateApiKey();
       const user = upsertUserByLabel(identity.email, hash);
+      // Attribute this authorize hit in the audit log to the user we just
+      // upserted, instead of leaving it as an anonymous "—" row.
+      (req as any).authedUser = { user, kind: "oauth" };
       const code = newRandomToken("ac_", 24);
       saveAuthCode(
         {
@@ -236,6 +239,7 @@ oauthRouter.post("/oauth/consent", (req: Request, res: Response) => {
   // uses the *shared* admin QBO connection underneath.
   const { hash } = generateApiKey();
   const user = createUser(hash, "oauth-issued");
+  (req as any).authedUser = { user, kind: "oauth" };
   const code = newRandomToken("ac_", 24);
   saveAuthCode(
     {
@@ -273,11 +277,11 @@ oauthRouter.post("/oauth/token", async (req: Request, res: Response) => {
   }
 
   if (grant_type === "authorization_code") {
-    await handleAuthorizationCodeGrant(body, presented.client_id, res);
+    await handleAuthorizationCodeGrant(body, presented.client_id, req, res);
     return;
   }
   if (grant_type === "refresh_token") {
-    await handleRefreshTokenGrant(body, presented.client_id, res);
+    await handleRefreshTokenGrant(body, presented.client_id, req, res);
     return;
   }
 
@@ -290,6 +294,7 @@ oauthRouter.post("/oauth/token", async (req: Request, res: Response) => {
 async function handleAuthorizationCodeGrant(
   body: Record<string, string>,
   clientId: string,
+  req: Request,
   res: Response,
 ): Promise<void> {
   const { code, redirect_uri, code_verifier } = body;
@@ -331,6 +336,12 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
+  // Attribute this token issuance to the user the auth code was bound to.
+  // Without this, /oauth/token rows render anonymously in the audit log
+  // even though we know exactly whose JWT we're minting.
+  const grantedUser = findUserById(ac.user_id);
+  if (grantedUser) (req as any).authedUser = { user: grantedUser, kind: "oauth" };
+
   const { token: access_token, expiresIn } = await signAccessToken({
     sub: String(ac.user_id),
     client_id: ac.client_id,
@@ -354,6 +365,7 @@ async function handleAuthorizationCodeGrant(
 async function handleRefreshTokenGrant(
   body: Record<string, string>,
   clientId: string,
+  req: Request,
   res: Response,
 ): Promise<void> {
   const { refresh_token } = body;
@@ -370,6 +382,10 @@ async function handleRefreshTokenGrant(
     res.status(400).json({ error: "invalid_grant", error_description: "refresh_token was issued to a different client" });
     return;
   }
+  // Attribute the refresh to the user the original grant was bound to.
+  const grantedUser = findUserById(old.user_id);
+  if (grantedUser) (req as any).authedUser = { user: grantedUser, kind: "oauth" };
+
   const { token: access_token, expiresIn } = await signAccessToken({
     sub: String(old.user_id),
     client_id: old.client_id,

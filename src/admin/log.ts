@@ -4,6 +4,20 @@ import type { AuthedUser } from "../auth.js";
 
 const MAX_ERROR_LEN = 240;
 
+// Paths that have no user-attribution semantics (public protocol metadata,
+// browser noise, healthchecks). Logging them just produces "—" rows in
+// the audit table, which clutters the dashboard without forensic value.
+const SKIP_LOG_PATHS = new Set([
+  "/health",
+  "/favicon.ico",
+]);
+const SKIP_LOG_PREFIXES = ["/.well-known/"];
+
+function shouldSkipLog(path: string): boolean {
+  if (SKIP_LOG_PATHS.has(path)) return true;
+  return SKIP_LOG_PREFIXES.some((p) => path.startsWith(p));
+}
+
 const insert = db.prepare(
   `INSERT INTO request_log
      (ts, user_id, user_label, auth_kind, method, path, tool_name, rpc_method,
@@ -29,6 +43,9 @@ export function requestLogMiddleware(req: Request, res: Response, next: NextFunc
 
   res.on("finish", () => {
     try {
+      const path = req.originalUrl.split("?")[0]; // strip query (avoid logging tokens)
+      if (shouldSkipLog(path)) return;
+
       const auth: AuthedUser | undefined = (req as any).authedUser;
       const tool: string | undefined = res.locals.toolName;
       const rpc: string | undefined = res.locals.rpcMethod;
@@ -45,7 +62,7 @@ export function requestLogMiddleware(req: Request, res: Response, next: NextFunc
         auth?.user.label ?? null,
         auth?.kind ?? null,
         req.method,
-        req.originalUrl.split("?")[0], // strip query (avoid logging tokens)
+        path,
         tool ?? null,
         rpc ?? null,
         res.statusCode,

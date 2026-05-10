@@ -6,7 +6,7 @@ import { config } from "./config.js";
 import { db } from "./db.js";
 import { registerAllTools } from "./tools/index.js";
 import { buildAuthUrl, exchangeCode } from "./intuit.js";
-import { authenticate, createUser, generateApiKey, isToolAllowed, upsertUserByLabel, type AuthedUser } from "./auth.js";
+import { authenticate, createUser, findUserByLabel, generateApiKey, isToolAllowed, upsertUserByLabel, type AuthedUser } from "./auth.js";
 import { getSharedRealmInfo, saveSharedConnection } from "./qbo.js";
 import { oauthRouter } from "./oauth/routes.js";
 import { cfAccessEnabled, identifyFromCfAccess } from "./oauth/cf_access.js";
@@ -213,6 +213,7 @@ app.get("/team-signup", async (req: Request, res: Response) => {
     if (identity) {
       const { plain, hash } = generateApiKey();
       const user = upsertUserByLabel(identity.email, hash);
+      (req as any).authedUser = { user, kind: "oauth" };
       res.type("html").send(renderSignupResultHtml(plain, identity.email, user.id));
       return;
     }
@@ -265,6 +266,7 @@ app.post("/team-signup", (req: Request, res: Response) => {
   const label = body.label?.trim() || null;
   const { plain, hash } = generateApiKey();
   const user = createUser(hash, label);
+  (req as any).authedUser = { user, kind: "static" };
   res.type("html").send(renderSignupResultHtml(plain, label, user.id));
 });
 
@@ -321,6 +323,14 @@ app.get("/connect/quickbooks", (req: Request, res: Response) => {
     return;
   }
 
+  // Token-auth bootstrap is run by the env-var primary admin. Attribute
+  // the audit log row to their user (if their row exists) so the action
+  // shows up under a name instead of "—".
+  if (config.adminEmail) {
+    const adminUser = findUserByLabel(config.adminEmail);
+    if (adminUser) (req as any).authedUser = { user: adminUser, kind: "static" };
+  }
+
   cleanupSessions.run(Date.now());
   const state = randomBytes(24).toString("base64url");
   const now = Date.now();
@@ -366,6 +376,12 @@ app.get("/connect/callback", async (req: Request, res: Response) => {
   try {
     const tokens = await exchangeCode(code);
     saveSharedConnection(realmId, tokens);
+    // Attribute the callback row to the env-var primary admin too — same
+    // reasoning as the GET /connect/quickbooks bootstrap step above.
+    if (config.adminEmail) {
+      const adminUser = findUserByLabel(config.adminEmail);
+      if (adminUser) (req as any).authedUser = { user: adminUser, kind: "static" };
+    }
     res.type("html").send(
       htmlPage(
         "QBO admin connection established",
