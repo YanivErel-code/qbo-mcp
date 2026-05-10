@@ -555,10 +555,16 @@ adminRouter.post("/admin/users/:id/permissions", async (req: Request, res: Respo
     setUserToolWhitelist(id, null);
   } else {
     // Form submits multiple `tool` checkboxes. Coerce to array; validate
-    // against the canonical tool list to refuse unknown names.
+    // against the canonical tool list to refuse unknown names. `whoami`
+    // is force-included because it's always implicitly allowed —
+    // including it in the persisted list keeps the UI count honest
+    // (the disabled checkbox in the rendered form looks ticked, so the
+    // saved state should too).
     const raw = body.tool;
     const submitted = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    const allowed = (ALL_TOOL_NAMES as readonly string[]).filter((t) => submitted.includes(t));
+    const allowed = (ALL_TOOL_NAMES as readonly string[]).filter(
+      (t) => submitted.includes(t) || t === "whoami",
+    );
     setUserToolWhitelist(id, allowed);
   }
 

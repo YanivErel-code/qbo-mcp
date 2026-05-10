@@ -136,10 +136,16 @@ describe("admin — permissions form", () => {
     expect(res.status).toBe(302);
 
     const reloaded = findUserById(u.id);
-    expect(reloaded?.toolWhitelist).toEqual(["list_customers", "list_invoices"]);
+    // whoami force-included; submitted "evil_unknown_tool" filtered out;
+    // ALL_TOOL_NAMES order is preserved (whoami first).
+    expect(reloaded?.toolWhitelist).toEqual([
+      "whoami",
+      "list_customers",
+      "list_invoices",
+    ]);
   });
 
-  it("POST mode=restricted with no tool checkboxes saves an empty list (lock-out)", async () => {
+  it("POST mode=restricted with no tool checkboxes saves [whoami] (whoami always implicit)", async () => {
     const { hash } = generateApiKey();
     const u = createUser(hash, "perm-empty@test.local");
     const res = await request(app)
@@ -147,6 +153,22 @@ describe("admin — permissions form", () => {
       .type("form")
       .send({ mode: "restricted" });
     expect(res.status).toBe(302);
-    expect(findUserById(u.id)?.toolWhitelist).toEqual([]);
+    // whoami is force-included so the persisted whitelist matches what the
+    // form's disabled-but-ticked whoami checkbox visually implies.
+    expect(findUserById(u.id)?.toolWhitelist).toEqual(["whoami"]);
+  });
+
+  it("POST mode=restricted always preserves whoami even if not submitted", async () => {
+    const { hash } = generateApiKey();
+    const u = createUser(hash, "perm-whoami@test.local");
+    const res = await request(app)
+      .post(`/admin/users/${u.id}/permissions?token=test_admin_token`)
+      .type("form")
+      .send({ mode: "restricted", tool: ["list_customers"] });
+    expect(res.status).toBe(302);
+    expect(findUserById(u.id)?.toolWhitelist).toEqual([
+      "whoami",
+      "list_customers",
+    ]);
   });
 });
