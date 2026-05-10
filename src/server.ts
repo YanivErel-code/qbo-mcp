@@ -14,7 +14,7 @@ import { adminRouter } from "./admin/routes.js";
 import { requestLogMiddleware } from "./admin/log.js";
 
 function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: "qbo-mcp", version: "0.3.0" });
+  const server = new McpServer({ name: "qbo-mcp", version: "0.1.0" });
   registerAllTools(server);
   return server;
 }
