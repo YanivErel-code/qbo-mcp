@@ -3,7 +3,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "./config.js";
 
-mkdirSync(dirname(config.databasePath), { recursive: true });
+// `:memory:` is a special path for better-sqlite3 — don't try to mkdir it.
+// Used by the test suite (tests/setup.ts sets DATABASE_PATH=:memory:).
+if (config.databasePath !== ":memory:") {
+  mkdirSync(dirname(config.databasePath), { recursive: true });
+}
 
 export const db = new Database(config.databasePath);
 db.pragma("journal_mode = WAL");

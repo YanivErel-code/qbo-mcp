@@ -1,5 +1,8 @@
 # qbo-mcp
 
+[![CI](https://github.com/YanivErel-code/qbo-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/YanivErel-code/qbo-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A self-hostable, **read-only** QuickBooks Online server for the
 [Model Context Protocol](https://modelcontextprotocol.io/). Lets your
 team query QBO data from any MCP-compatible AI client through a shared
@@ -295,9 +298,14 @@ Shows:
 ```bash
 npm install
 cp .env.example .env
-npm run dev   # tsx watch, rebuilds on save
+npm run dev            # tsx watch, rebuilds on save
 npm run typecheck
+npm test               # run tests (Vitest)
+npm run test:watch     # tests in watch mode
+npm run test:coverage  # tests with v8 coverage report
 ```
+
+Test suite: 130+ tests across 10 files, ~82% line coverage, ~97% function coverage. Mix of pure unit tests (crypto, JWT, store), DB-backed tests (auth, QBO connection management), and HTTP integration tests (`/mcp`, OAuth flow, admin UI, every MCP tool) using Vitest + supertest. CI runs on every push via `.github/workflows/ci.yml`.
 
 The project is TypeScript on Node 20+, Express 4 with `@modelcontextprotocol/sdk` for the MCP transport, `better-sqlite3` for the data store, `jose` for JWT/JWKS, and zod for env-var schema validation.
 

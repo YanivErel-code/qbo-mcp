@@ -5,3 +5,7 @@ data/*.db*
 .env
 *.log
 .DS_Store
+coverage
+.vitest-temp
+jwt-secret.bin
+
