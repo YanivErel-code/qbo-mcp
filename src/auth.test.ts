@@ -65,6 +65,7 @@ describe("auth — pure helpers", () => {
       id,
       label: null,
       toolWhitelist,
+      isAdmin: false,
     });
 
     it("allows everything when whitelist is null (default)", () => {

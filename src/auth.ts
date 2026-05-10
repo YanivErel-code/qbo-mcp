@@ -13,6 +13,11 @@ export type User = {
    * implicitly allowed regardless of this list.
    */
   toolWhitelist: string[] | null;
+  /**
+   * Manually-flagged admin (via /admin UI). Independent of ADMIN_EMAIL env,
+   * which grants implicit primary admin regardless of this flag.
+   */
+  isAdmin: boolean;
 };
 
 export type AuthedUser = {
@@ -35,6 +40,7 @@ type UserRow = {
   id: number;
   label: string | null;
   tool_whitelist: string | null;
+  is_admin: number;
 };
 
 function rowToUser(row: UserRow): User {
@@ -47,7 +53,12 @@ function rowToUser(row: UserRow): User {
       // Malformed JSON — treat as unrestricted; admin should re-set it.
     }
   }
-  return { id: row.id, label: row.label, toolWhitelist };
+  return {
+    id: row.id,
+    label: row.label,
+    toolWhitelist,
+    isAdmin: row.is_admin === 1,
+  };
 }
 
 export function createUser(apiKeyHash: string, label: string | null = null): User {
@@ -55,28 +66,28 @@ export function createUser(apiKeyHash: string, label: string | null = null): Use
   const info = db
     .prepare("INSERT INTO users (api_key_hash, label, created_at) VALUES (?, ?, ?)")
     .run(apiKeyHash, label, now);
-  return { id: Number(info.lastInsertRowid), label, toolWhitelist: null };
+  return { id: Number(info.lastInsertRowid), label, toolWhitelist: null, isAdmin: false };
 }
 
 export function findUserByApiKey(plain: string | undefined): User | null {
   if (!plain) return null;
   const hash = hashApiKey(plain);
   const row = db
-    .prepare("SELECT id, label, tool_whitelist FROM users WHERE api_key_hash = ?")
+    .prepare("SELECT id, label, tool_whitelist, is_admin FROM users WHERE api_key_hash = ?")
     .get(hash) as UserRow | undefined;
   return row ? rowToUser(row) : null;
 }
 
 export function findUserById(id: number): User | null {
   const row = db
-    .prepare("SELECT id, label, tool_whitelist FROM users WHERE id = ?")
+    .prepare("SELECT id, label, tool_whitelist, is_admin FROM users WHERE id = ?")
     .get(id) as UserRow | undefined;
   return row ? rowToUser(row) : null;
 }
 
 export function findUserByLabel(label: string): User | null {
   const row = db
-    .prepare("SELECT id, label, tool_whitelist FROM users WHERE label = ? LIMIT 1")
+    .prepare("SELECT id, label, tool_whitelist, is_admin FROM users WHERE label = ? LIMIT 1")
     .get(label) as UserRow | undefined;
   return row ? rowToUser(row) : null;
 }
@@ -96,6 +107,13 @@ export function isToolAllowed(user: User, toolName: string): boolean {
 export function setUserToolWhitelist(userId: number, whitelist: string[] | null): void {
   db.prepare("UPDATE users SET tool_whitelist = ? WHERE id = ?").run(
     whitelist === null ? null : JSON.stringify(whitelist),
+    userId,
+  );
+}
+
+export function setUserIsAdmin(userId: number, isAdmin: boolean): void {
+  db.prepare("UPDATE users SET is_admin = ? WHERE id = ?").run(
+    isAdmin ? 1 : 0,
     userId,
   );
 }

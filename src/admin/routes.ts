@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { identifyFromCfAccess } from "../oauth/cf_access.js";
 import { getSharedRealmInfo } from "../qbo.js";
-import { findUserById, findUserByLabel, setUserToolWhitelist } from "../auth.js";
+import { findUserById, findUserByLabel, setUserIsAdmin, setUserToolWhitelist } from "../auth.js";
 import { ALL_TOOL_NAMES } from "../tools/index.js";
 
 export const adminRouter = Router();
@@ -21,17 +21,37 @@ export const adminRouter = Router();
 type AdminContext = { reason: "cf_access" | "token"; email: string | null };
 
 async function isAdmin(req: Request): Promise<AdminContext | null> {
-  if (config.adminEmail) {
-    const identity = await identifyFromCfAccess(req);
-    if (identity && identity.email.toLowerCase() === config.adminEmail.toLowerCase()) {
-      return { reason: "cf_access", email: identity.email };
-    }
-  }
+  // 1. Token bypass — break-glass for when CF Access is broken or for the
+  //    initial bootstrap before any admins exist in the DB.
   const tok = (req.query.token as string | undefined) ?? undefined;
   if (config.adminBootstrapToken && tok && tok === config.adminBootstrapToken) {
     return { reason: "token", email: null };
   }
+
+  // 2. CF Access JWT — accepted if either:
+  //    a. email matches the env var ADMIN_EMAIL (primary admin, can't be
+  //       revoked via UI), OR
+  //    b. email matches a `users` row whose is_admin flag is 1 (granted
+  //       via the /admin UI by another admin).
+  const identity = await identifyFromCfAccess(req);
+  if (identity) {
+    if (
+      config.adminEmail &&
+      identity.email.toLowerCase() === config.adminEmail.toLowerCase()
+    ) {
+      return { reason: "cf_access", email: identity.email };
+    }
+    const user = findUserByLabel(identity.email);
+    if (user?.isAdmin) {
+      return { reason: "cf_access", email: identity.email };
+    }
+  }
   return null;
+}
+
+function isPrimaryAdmin(label: string | null): boolean {
+  if (!label || !config.adminEmail) return false;
+  return label.toLowerCase() === config.adminEmail.toLowerCase();
 }
 
 async function requireAdmin(req: Request, res: Response): Promise<AdminContext | null> {
@@ -144,7 +164,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
   const users = db.prepare(
     `SELECT
-       u.id, u.label, u.created_at, u.tool_whitelist,
+       u.id, u.label, u.created_at, u.tool_whitelist, u.is_admin,
        (SELECT MAX(ts) FROM request_log WHERE user_id = u.id) AS last_seen,
        (SELECT COUNT(*) FROM request_log WHERE user_id = u.id) AS request_count
      FROM users u
@@ -155,6 +175,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
     label: string | null;
     created_at: number;
     tool_whitelist: string | null;
+    is_admin: number;
     last_seen: number | null;
     request_count: number;
   }>;
@@ -258,20 +279,45 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
       }
     }
 
+    // Admin column: show role badge + grant/revoke action where applicable.
+    const isPrimary = isPrimaryAdmin(u.label);
+    let adminCell: string;
+    if (isPrimary) {
+      adminCell = `<span class="pill ok" title="Set via ADMIN_EMAIL env var">primary admin</span>`;
+    } else if (u.is_admin === 1) {
+      adminCell = `<span class="pill ok">admin</span>
+        <form method="POST" action="/admin/users/${u.id}/admin/revoke${tokenPart}" class="inline"
+              onsubmit="return confirm('Revoke admin from user ${u.id}${u.label ? ` (${u.label})` : ""}?');">
+          <button type="submit" style="font-size:11px;padding:2px 8px;background:#888">Revoke admin</button>
+        </form>`;
+    } else {
+      adminCell = `<span class="muted">user</span>
+        <form method="POST" action="/admin/users/${u.id}/admin/grant${tokenPart}" class="inline"
+              onsubmit="return confirm('Promote user ${u.id}${u.label ? ` (${u.label})` : ""} to admin?');">
+          <button type="submit" style="font-size:11px;padding:2px 8px;background:#0a4dad">Make admin</button>
+        </form>`;
+    }
+
+    // Hide Revoke button on the primary admin to avoid foot-gun (env-var
+    // user can't be removed via UI anyway, but the button would be
+    // confusing).
+    const revokeButton = isPrimary
+      ? `<span class="muted" style="font-size:12px">env-protected</span>`
+      : `<form method="POST" action="/admin/users/${u.id}/revoke${tokenPart}" class="inline"
+              onsubmit="return confirm('Revoke user ${u.id}${u.label ? ` (${u.label})` : ""}? Their key stops working immediately.');">
+          <button type="submit">Revoke</button>
+        </form>`;
+
     return `
       <tr>
         <td class="mono">${u.id}</td>
         <td>${label}</td>
+        <td>${adminCell}</td>
         <td class="nowrap">${fmtTs(u.created_at)}</td>
         <td class="nowrap">${lastSeen}</td>
         <td>${u.request_count}</td>
         <td>${permsCell} <a href="/admin/users/${u.id}/permissions${tokenPart}" style="font-size:12px;margin-left:6px">edit</a></td>
-        <td>
-          <form method="POST" action="/admin/users/${u.id}/revoke${tokenPart}" class="inline"
-                onsubmit="return confirm('Revoke user ${u.id}${u.label ? ` (${u.label})` : ""}? Their key stops working immediately.');">
-            <button type="submit">Revoke</button>
-          </form>
-        </td>
+        <td>${revokeButton}</td>
       </tr>`;
   }).join("");
 
@@ -404,8 +450,8 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
 
      <h2>Users <span class="muted" style="font-size:14px;font-weight:normal">${users.length} total</span></h2>
      <table>
-       <thead><tr><th>id</th><th>label</th><th>created</th><th>last seen</th><th># reqs</th><th>permissions</th><th></th></tr></thead>
-       <tbody>${userRows || `<tr><td colspan="7" class="muted">No users yet.</td></tr>`}</tbody>
+       <thead><tr><th>id</th><th>label</th><th>role</th><th>created</th><th>last seen</th><th># reqs</th><th>permissions</th><th></th></tr></thead>
+       <tbody>${userRows || `<tr><td colspan="8" class="muted">No users yet.</td></tr>`}</tbody>
      </table>
 
      <h2>Recent activity
@@ -516,6 +562,57 @@ adminRouter.post("/admin/users/:id/permissions", async (req: Request, res: Respo
     setUserToolWhitelist(id, allowed);
   }
 
+  const tokenPart = ctx.reason === "token" ? `?token=${req.query.token}` : "";
+  res.redirect(`/admin${tokenPart}`);
+});
+
+// ---- Grant / revoke admin ----
+
+adminRouter.post("/admin/users/:id/admin/grant", async (req: Request, res: Response) => {
+  const ctx = await requireAdmin(req, res);
+  if (!ctx) return;
+  const id = Number(req.params.id);
+  const user = Number.isFinite(id) ? findUserById(id) : null;
+  if (!user || id <= 0) {
+    res.status(404).type("html").send(page("Not found", "<h1>User not found</h1>"));
+    return;
+  }
+  if (isPrimaryAdmin(user.label)) {
+    // Already implicit primary — flag is redundant but harmless. Skip the
+    // write.
+  } else {
+    setUserIsAdmin(id, true);
+  }
+  const tokenPart = ctx.reason === "token" ? `?token=${req.query.token}` : "";
+  res.redirect(`/admin${tokenPart}`);
+});
+
+adminRouter.post("/admin/users/:id/admin/revoke", async (req: Request, res: Response) => {
+  const ctx = await requireAdmin(req, res);
+  if (!ctx) return;
+  const id = Number(req.params.id);
+  const user = Number.isFinite(id) ? findUserById(id) : null;
+  if (!user || id <= 0) {
+    res.status(404).type("html").send(page("Not found", "<h1>User not found</h1>"));
+    return;
+  }
+  if (isPrimaryAdmin(user.label)) {
+    // Refuse: the primary admin is set via ADMIN_EMAIL env var. Removing
+    // the is_admin flag wouldn't actually demote them, and the UI button
+    // shouldn't have rendered for this user anyway — defensive 400.
+    res.status(400).type("html").send(
+      page(
+        "Refused",
+        `<h1>Refused</h1>
+         <p>The primary admin is set via the <code>ADMIN_EMAIL</code> env var
+            and can't be revoked through the UI. Change the env var and
+            restart the container if you want to demote them.</p>
+         <p><a href="/admin${ctx.reason === "token" ? `?token=${req.query.token}` : ""}">Back</a></p>`,
+      ),
+    );
+    return;
+  }
+  setUserIsAdmin(id, false);
   const tokenPart = ctx.reason === "token" ? `?token=${req.query.token}` : "";
   res.redirect(`/admin${tokenPart}`);
 });

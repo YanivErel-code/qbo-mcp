@@ -143,3 +143,13 @@ try {
 } catch (e) {
   if (!String((e as Error).message).includes("duplicate column")) throw e;
 }
+
+// Idempotent column add for users.is_admin. 0 = regular user (default),
+// 1 = admin. The ADMIN_EMAIL env var still grants implicit primary admin
+// regardless of this flag — see auth.ts isToolAllowed and admin/routes.ts
+// requireAdmin. The flag is for additional admins managed via the UI.
+try {
+  db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  if (!String((e as Error).message).includes("duplicate column")) throw e;
+}
