@@ -146,7 +146,7 @@ app.get("/", (_req: Request, res: Response) => {
        <p><a class="button" href="/team-signup">Sign up for an access key</a></p>
 
        <h2>Bootstrap or re-link the QBO admin connection</h2>
-       <p>For the team admin only — needs the admin bootstrap token. This (re)connects DittoLive's QuickBooks under one shared admin slot at Intuit.</p>
+       <p>For the team admin only — needs the admin bootstrap token. This (re)connects your QuickBooks company under one shared admin slot at Intuit.</p>
        <p><a class="button" style="background:#0a4dad" href="/connect/quickbooks">Re-link QBO admin (admin only)</a></p>`,
     ),
   );
@@ -221,7 +221,7 @@ app.get("/team-signup", async (req: Request, res: Response) => {
          <label for="token">Team access token</label>
          <input type="password" name="token" id="token" autocomplete="off" autofocus required>
          <label for="label">Optional label (your email or name, for your own audit)</label>
-         <input type="text" name="label" id="label" autocomplete="off" placeholder="e.g. firstname.lastname@ditto.com">
+         <input type="text" name="label" id="label" autocomplete="off" placeholder="e.g. your.name@yourdomain.com">
          <p style="margin-top:18px"><button type="submit">Generate my key</button></p>
        </form>`,
     ),
@@ -286,7 +286,7 @@ app.get("/connect/quickbooks", (req: Request, res: Response) => {
         htmlPage(
           "Admin bootstrap",
           `<h1>Admin bootstrap</h1>
-           <p>This will (re)link DittoLive's QuickBooks under the shared admin slot at Intuit.
+           <p>This will (re)link your QuickBooks company under the shared admin slot at Intuit.
               Running this kicks out the previous admin (if any) and assigns the user
               completing the OAuth dance as the new admin.</p>
            <form method="GET" action="/connect/quickbooks">

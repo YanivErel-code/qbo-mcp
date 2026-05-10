@@ -6,7 +6,7 @@ import type { Request } from "express";
 // and asserts the JWT to the origin via the `Cf-Access-Jwt-Assertion`
 // header on every request that passed an Access policy. We verify the
 // signature + audience + issuer; if it checks out, the request was made
-// by a user the policy allowed (e.g. @ditto.com Google login) and we
+// by a user the policy allowed (e.g. @yourdomain.com Google login) and we
 // trust the embedded `email` claim as their identity.
 
 const teamDomain = process.env.CF_ACCESS_TEAM_DOMAIN?.trim() || null;

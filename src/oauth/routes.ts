@@ -160,7 +160,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
 
   // -------- Fast path: Cloudflare Access already authenticated this user --------
   // If the request carries a valid Cf-Access-Jwt-Assertion (issued by your
-  // CF Access policy, e.g. "Allow emails @ditto.com via Google"), trust it
+  // CF Access policy, e.g. "Allow emails @yourdomain.com via Google"), trust it
   // as the user's identity and skip the team-token consent page entirely.
   if (cfAccessEnabled) {
     const identity = await identifyFromCfAccess(req);
@@ -445,7 +445,7 @@ function consentPageHtml(state: string, clientName: string): string {
     .note { font-size: 13px; color: #888; margin-top: 14px; }
   </style></head><body>
   <h1>Authorize ${clientName}</h1>
-  <p>Grant ${clientName} access to Ditto's QuickBooks data via the shared admin connection.</p>
+  <p>Grant ${clientName} access to your team's QuickBooks data via the shared admin connection.</p>
   <form method="POST" action="/oauth/consent">
     <input type="hidden" name="state" value="${state}">
     <label for="team_token">Team access token</label>

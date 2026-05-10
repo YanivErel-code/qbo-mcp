@@ -31,7 +31,7 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 // reserved sentinel — no real user has id 0, since AUTOINCREMENT starts
 // at 1). This keeps the crypto module unchanged. The realm_id participates
 // via the salt's "user:0" form being the same across realms — fine here
-// because we have one Ditto realm, but if multi-realm support is added
+// because we currently support one realm; if multi-realm support is added
 // later, swap to a realm-aware HKDF info string.
 const SHARED_ENCRYPTION_USER_SLOT = 0;
 

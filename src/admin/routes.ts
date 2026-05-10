@@ -12,7 +12,7 @@ export const adminRouter = Router();
 // Two ways to be the admin:
 //   1. Cloudflare Access JWT whose email matches `config.adminEmail`. Pleasant
 //      because the CF Access policy on /admin* automatically enforces that
-//      you're a Ditto employee, and the email check pins it to one user.
+//      you're an approved user, and the email check pins it to one user.
 //   2. `?token=<ADMIN_BOOTSTRAP_TOKEN>` query param. Useful as a break-glass
 //      when CF Access is misconfigured or unavailable. Same token used for
 //      /connect/quickbooks bootstrap.
@@ -400,7 +400,7 @@ adminRouter.get("/admin", async (req: Request, res: Response) => {
      </table>
      <p class="muted" style="font-size:12px;margin-top:24px">
        Custom filters via query string: <code>?failures=1</code>, <code>?user=8</code>,
-       <code>?label=name@ditto.com</code>, <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
+       <code>?label=name@example.com</code>, <code>?since=1h</code> (or <code>1d</code>, <code>30m</code>),
        <code>?path=oauth</code>, <code>?tool=qbo_query</code>. Combine freely.
      </p>`,
   ));

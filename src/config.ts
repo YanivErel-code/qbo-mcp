@@ -24,7 +24,7 @@ const schema = z.object({
   // ---- Cloudflare Access (optional, recommended for zero-friction signup) ----
   // When set, /oauth/authorize and /team-signup auto-pass for users whose
   // requests carry a valid Cf-Access-Jwt-Assertion (i.e. they came through
-  // a Cloudflare Access policy that allowed them, e.g. emails @ditto.com).
+  // a Cloudflare Access policy that allowed them, e.g. emails @yourdomain.com).
   // Falls back to the team-token form when these are unset.
   CF_ACCESS_TEAM_DOMAIN: z.string().optional(), // e.g. "erel.cloudflareaccess.com"
   CF_ACCESS_AUD: z.string().optional(),         // the per-application AUD tag
